@@ -1,0 +1,1 @@
+gcc -fPIC -shared -o keyrate.so main.cpp Parameters.cpp Xlower.cpp Xupper.cpp Lower.cpp Up.cpp KR_yu.cpp

@@ -5,6 +5,8 @@ if __name__ == '__main__':
     import numpy as np
 
     worker = IFWorker('tcp://172.16.60.199:224')
+    import time
+    time.time()
 
     dmm = worker.EO_DMM
     dc = worker.EO_DC

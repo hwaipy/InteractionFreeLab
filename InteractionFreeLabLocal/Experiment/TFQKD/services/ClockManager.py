@@ -1,4 +1,5 @@
 from interactionfreepy import IFWorker, IFLoop
+import sys
 
 
 class ClockManager:
@@ -26,8 +27,9 @@ class ClockManager:
 
 
 if __name__ == '__main__':
-    worker1 = IFWorker('tcp://192.168.25.5:224')
+    worker1 = IFWorker(sys.argv[1])
     cm = ClockManager(worker1.asyncInvoker('HMC7044EvalAlice'), worker1.asyncInvoker('HMC7044EvalBob'), worker1.asyncInvoker('HMC7044EvalCharlie'), aliceChannel=1, bobChannel=1, charlieChannel=1)
-    worker2 = IFWorker('tcp://192.168.25.5:224', 'TF_ClockManager', cm, force=True)
+    worker2 = IFWorker(sys.argv[1], 'TF_ClockManager', cm, force=True)
+    print('Clock Manager Started.')
     IFLoop.join()
    # worker.TF_ClockManager.delay(alice=5)

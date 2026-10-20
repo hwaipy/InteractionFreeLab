@@ -1,0 +1,1 @@
+# gcc -fPIC -shared timetag.c -o timetag.so

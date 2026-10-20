@@ -3,7 +3,7 @@ from ctypes import (
     c_char_p,
 )
 from time import sleep
-from Instrument.lab.thorlabs_kinesis import polarizer as mpc
+from Instrument.lib.thorlabs.kinesis import polarizer as mpc
 from threading import Thread
 from queue import Queue
 import numpy as np

@@ -200,28 +200,28 @@ class RTB2004(RTE):
         return start, stop, length, data
 
 if __name__ == '__main__':
-    resource = 'TCPIP0::172.16.20.71::inst0::INSTR'
+    resource = 'TCPIP0::192.168.25.115::inst0::INSTR'
     rte = RTB2004(resource)
-    # resource = 'TCPIP0::192.168.25.111::inst0::INSTR'
+    # resource = 'TCPIP0::192.168.25.115::inst0::INSTR'
     # rte = RTE(resource)
 
-    from IFWorker import IFWorker
-    from IFCore import IFLoop
-    IFWorker('tcp://localhost:224', 'EleOsc', rte, ['TekAWG'])
-    IFLoop.join()
+    # from IFWorker import IFWorker
+    # from IFCore import IFLoop
+    # IFWorker('tcp://localhost:224', 'EleOsc', rte, ['TekAWG'])
+    # IFLoop.join()
 
-    # rte.setAcquireLength('AUTO')
-    # rte.setDataFormat('REAL')
-    # rte.turnOn(1, False)
-    # [rte.turnOff(i, False) for i in range(2, 5)]
-    # rte.setCoupling(1, 'DC')
-    # rte.setVoltageLowAndHigh(1, -0.1, 0.6, False)
-    # rte.setTimeRangeAndOffset(1e-6, 0, False)
-    # rte.setTriggerMode('NORMAL', False)
-    # rte.setTriggerSource('CH1', False)
-    # rte.setTriggerCriteria('RAISE', 0.2, False)
-    # rte.single()
-    # print(rte.getWaveform(1))
+    rte.setAcquireLength('AUTO')
+    rte.setDataFormat('REAL')
+    rte.turnOn(1, False)
+    [rte.turnOff(i, False) for i in range(2, 5)]
+    rte.setCoupling(1, 'DC')
+    rte.setVoltageLowAndHigh(1, -0.1, 0.6, False)
+    rte.setTimeRangeAndOffset(1e-6, 0, False)
+    rte.setTriggerMode('AUTO', False)
+    rte.setTriggerSource('CH1', False)
+    rte.setTriggerCriteria('RAISE', 0.2, False)
+    rte.single()
+    print(rte.getWaveform(1))
     #
     # import time
     # time.sleep(1)

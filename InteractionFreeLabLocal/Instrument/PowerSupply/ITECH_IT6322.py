@@ -204,10 +204,11 @@ if __name__ == '__main__':
         ps = IT6322('{}::INSTR'.format(config[0].replace('COM', 'ASRL')))
         assert ps.getSerialNumber() == config[1]
         config.append(ps)
+    # for config in configs:
+        IFWorker('tcp://192.168.25.5:1061', config[2], config[-1], force=True)
+        print(f'DC Drive Services {config[2]} Started!')
 
-    for config in configs:
-        IFWorker('tcp://192.168.25.5:224', config[2], config[-1])
-
-    print('DC Drive Started!')
+    print()
+    print('All DC Drive Services Started!')
 
     IFLoop.join()

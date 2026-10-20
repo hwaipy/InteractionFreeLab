@@ -39,7 +39,7 @@ class VISAInstrument(Instrument):
         idn = self.scpi._IDN.query()
         if idn is None:
             return [''] * 4
-        if len(idn) is 0:
+        if len(idn) == 0:
             return [''] * 4
         idns = idn.split(',')
         while len(idns) < 4:

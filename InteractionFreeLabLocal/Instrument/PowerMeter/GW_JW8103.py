@@ -59,7 +59,7 @@ if __name__ == '__main__':
     ps = GW_JW8103(port)
     ps.setWavelength(1, 1550)
     ps.setWavelength(2, 1550)
-    IFWorker('tcp://192.168.25.5:224', serviceName, ps)
+    IFWorker('tcp://192.168.25.5:1061', serviceName, ps)
 
     print('PowerMeter Started!')
 

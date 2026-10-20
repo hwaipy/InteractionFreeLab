@@ -2,6 +2,7 @@ __author__ = 'Hwaipy'
 
 from Instrument.Instruments import Instrument
 from socketserver import BaseRequestHandler, TCPServer
+import sys
 
 
 class HMC7044Eval(Instrument):
@@ -130,5 +131,6 @@ if __name__ == '__main__':
 
     for port in serviceMap.keys():
         value = serviceMap[port]
-        worker = IFWorker('tcp://192.168.25.5:224', 'HMC7044Eval{}'.format(value[0]), value[1], force=True)
+        worker = IFWorker(sys.argv[1], 'HMC7044Eval{}'.format(value[0]), value[1], force=True)
         Thread(target=serve, args=[port]).start()
+        print(f'HMC7044Eval{value[0]} started on port {port}.')

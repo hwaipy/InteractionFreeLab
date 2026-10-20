@@ -30,4 +30,5 @@ if __name__ == '__main__':
     serviceName = 'Algorithm_Fitting'
 
     worker = IFWorker(endpoint, serviceName, FittingService())
-    IFLoop.join()
+    IFLoop.join() 
+ 

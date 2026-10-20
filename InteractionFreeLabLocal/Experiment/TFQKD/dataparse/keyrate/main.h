@@ -1,0 +1,1 @@
+﻿extern "C" double keyrate(double * results);

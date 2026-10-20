@@ -1,0 +1,1 @@
+gcc -fPIC -shared encoder.c -o encoder.so
