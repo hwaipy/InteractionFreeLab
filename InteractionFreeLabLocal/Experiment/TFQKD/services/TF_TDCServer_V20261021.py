@@ -1,26 +1,24 @@
 from datetime import datetime
 import sys
-from unittest import result
 from Instrument.tdc.SwabianTimeTag.SwabianTimeTag import SwabianTimeTag
 from Instrument.tdc.TDCServer import TDCServer
 import numpy as np
-from InteractionFreeLabLocal.Experiment.TFQKD.services.tdc import TFQKDQBERAnalyser
+from tdc.TFQKDQBERAnalyser import TFQKDQBERAnalyser, DataBlockParseResult
 import pytimetag
-from interactionfreepy import IFWorker, IFLoop
+from interactionfreepy import IFWorker
 import msgpack
 import numba
 from pytimetag import DataBlock
 from Instrument.tdc.SwabianTimeTag.SwabianTimeTag import generateDataBlockContent
 import time
-from rich.progress import Progress
 from rich.live import Live
 from rich.table import Table
 import os
 import pickle
-from datetime import datetime, timedelta
+from datetime import datetime
 import math
 from collections import OrderedDict
-from http.server import HTTPServer, SimpleHTTPRequestHandler, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 import urllib
 from rich.console import Group
@@ -293,7 +291,7 @@ def prepareAnalysers(workerRN, channelCount):
   analysers['QKDQBER'].configure({
     'AliceRandomNumbers': [(i) % 128 for i in range(128)], 'BobRandomNumbers': [(i) % 128 for i in range(128)], 
     'TimeEachBlock': int(1e12), 'FrequencyFrame': int(1e11), 'PhaseFrame': int(2e8), 'IntensityFrame': int(1e9),
-    'Period': 5000, 'TriggerPeriod': 40000000, 'PulsePosition': 2500, 'Gate': 1000, 'GateRef': 1000, 
+    'Period': 5000, 'TriggerPeriod': 80000000, 'PulsePosition': 2500, 'Gate': 1000, 'GateRef': 1000, 
     'TriggerChannel': 0, 'Channel 1': 2, 'Channel 2': 3, 'SyncChannelAlice': 4, 'SyncChannelBob': 5})
   
   analysers['TempStore'] = TempStoreAnalyser()
@@ -467,6 +465,8 @@ if __name__ == '__main__':
     syncDelays[:] = delays
     worker.blockingInvoker('Storage', timeout=2).append(storeCollection, result, fetchTime=dataBlock.creationTime)
         # worker.Storage.append(storeCollection, result, fetchTime=dataBlock.creationTime)
+    if 'QKDQBER' in result.keys() and result['QKDQBER'] is not None and (len(result['QKDQBER'].keys()) > 1):
+      print(DataBlockParseResult.toString(result['QKDQBER']))
 
   def storeRawData(dataBlock):
     datetimeStr = str(datetime.fromtimestamp(dataBlock.creationTime))

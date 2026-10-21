@@ -1,7 +1,7 @@
 from pytimetag.Analyser import Analyser, Validator
 import numpy as np
-import tick
-from util import RNManager
+# import tick
+# from util import RNManager
 from numba import njit
 import msgpack
 
@@ -92,14 +92,14 @@ class DataBlockParser:
     # Alice、Bob同步路计数统计
     aliceSyncCounts = self.countStat(channelNum=self.syncAliceChannel)
     bobSyncCounts = self.countStat(channelNum=self.syncBobChannel)
-    tick.tick('sync count statistics')
+    # tick.tick('sync count statistics')
     
     # 获取探测事件信息
     signalDeltaMetas, refDeltaMetas = self.getDeltaMetas()
-    tick.tick('delta Metas')
+    # tick.tick('delta Metas')
     
     detectionStatistics = self.detectionStat(signalDeltaMetas)
-    tick.tick('detection statistics')
+    # tick.tick('detection statistics')
 
     # 计算频差
     #### 🔽 TODO: DEBUGING  should replace this to a realtime calc. ####   
@@ -109,15 +109,15 @@ class DataBlockParser:
     # print('frequencies calculated')
     # refCountsForFreq = statRefCountsForFreqJIT(refDeltaMetas, self.frequencyFrame, self.frequencyFrameNum, 1000)
     # tick.tick('frequencies')
-    tick.tick('frequencies')
+    # tick.tick('frequencies')
     #### 🔼 TODO: DEBUGING  ####
 
     phaseDeltas = self.calcPhaseDelta(refDeltaMetas=refDeltaMetas, frequencies=frequencies)
     # print(phaseDeltas)
-    tick.tick('phase deltas')
+    # tick.tick('phase deltas')
 
     phaseErrors = self.computePhaseErrors(signalDeltaMetas, phaseDeltas, frequencies, 64)
-    tick.tick('end preprocessing')
+    # tick.tick('end preprocessing')
 
     return DataBlockParseResult(
       syncCountsAlice=aliceSyncCounts,
@@ -191,7 +191,7 @@ class DataBlockParser:
   def calcPhaseDelta(self, refDeltaMetas, frequencies):
       freq = frequencies[0]
       phaseDeltas = calcPhaseJIT(refDeltaMetas, self.phaseFrame, self.phaseFrameNum, freq)
-      tick.tick('calc phase delta done')
+      # tick.tick('calc phase delta done')
       phaseDeltas = np.array(phaseDeltas)
       return phaseDeltas
 
@@ -208,14 +208,14 @@ class DataBlockParseResult:
     self.phaseDeltas = phaseDeltas
 
   def serialize(self):
-    tick.tick('serializing DataBlockParseResult')    
+    # tick.tick('serializing DataBlockParseResult')    
     data = []
     for array in [self.syncCountsAlice, self.syncCountsBob, self.randomNumberBasisStatistics, self.detectionStatistics, self.phaseErrorStatistics, self.phaseDeltas]:
       data.append(array.shape)
       data.append(array.dtype.str)
       data.append(array.flatten().tolist())
     data = msgpack.packb(data)
-    tick.tick('serializing DataBlockParseResult')
+    # tick.tick('serializing DataBlockParseResult')
     return data
 
   def toSerialable(self):
@@ -243,7 +243,7 @@ class DataBlockParseResult:
     for i in range(len(aliceSyncCounts)):
       ca = aliceSyncCounts[i]
       cb = bobSyncCounts[i]
-      if ca > intensityThreshold and cb > intensityThreshold and ca < cb * intensityRatioThreshold and cb < ca * intensityRatioThreshold:
+      if (ca > intensityThreshold and cb > intensityThreshold and ca < cb * intensityRatioThreshold and cb < ca * intensityRatioThreshold) or True:
         valid += 1
         eX += XX[i][phaseThreshold]
         eY += YY[i][phaseThreshold]
