@@ -53,31 +53,6 @@ class SyncAnalyser(EncodingAnalyser):
       # tick.tick('computing pulse counts')
       # tick.tick('estimating pulse delta')
       pulseDeltaErrors = searchingPulseCountDip(pulseCounts, randomNumbers)
-
-      # if self.debug:
-      #   from pathlib import Path
-      #   from uuid import uuid4
-      #   from matplotlib.figure import Figure
-      #   from matplotlib.backends.backend_agg import FigureCanvasAgg
-      #   outputDirectory = Path('histograms')
-      #   outputDirectory.mkdir(parents=True, exist_ok=True)
-      #   figure = Figure(figsize=(10, 9), constrained_layout=True)
-      #   FigureCanvasAgg(figure)
-      #   axes = figure.subplots(3, 1)
-      #   axes[0].plot(np.arange(histogramInPulse.size) * resolution, histogramInPulse)
-      #   axes[0].set_title('histogramInPulse')
-      #   axes[0].set_xlabel('Time in pulse')
-      #   axes[0].set_ylabel('Counts')
-      #   axes[1].plot(np.arange(pulseCounts.size), pulseCounts)
-      #   axes[1].set_title('pulseCounts')
-      #   axes[1].set_xlabel('Pulse index')
-      #   axes[1].set_ylabel('Counts')
-      #   axes[2].plot(np.arange(pulseDeltaErrors.size), pulseDeltaErrors)
-      #   axes[2].set_title('pulseDeltaErrors')
-      #   axes[2].set_xlabel('Pulse shift')
-      #   axes[2].set_ylabel('Errors')
-      #   figure.savefig(outputDirectory / f'syncAnalysis_{uuid4().hex}.png')
-
       pulseDelta = pulseDeltaErrors.argmin()
       if pulseDelta > len(randomNumbers) / 2:
         pulseDelta -= len(randomNumbers)

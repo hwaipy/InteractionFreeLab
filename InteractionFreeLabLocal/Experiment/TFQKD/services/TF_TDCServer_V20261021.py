@@ -4,6 +4,7 @@ from unittest import result
 from Instrument.tdc.SwabianTimeTag.SwabianTimeTag import SwabianTimeTag
 from Instrument.tdc.TDCServer import TDCServer
 import numpy as np
+from InteractionFreeLabLocal.Experiment.TFQKD.services.tdc import TFQKDQBERAnalyser
 import pytimetag
 from interactionfreepy import IFWorker, IFLoop
 import msgpack
@@ -26,7 +27,7 @@ from rich.console import Group
 from rich.text import Text
 from tdc.SyncAnalyser import SyncAnalyser
 
-class ReadTimeTDC:
+class RealTimeTDC:
   def __init__(self):
     self.dataBuffer = []
     self.analysers = {}
@@ -49,11 +50,16 @@ class ReadTimeTDC:
       self.receivedTimeAve = np.average(diffs)
       self.receivedTimeStd = np.std(diffs)
 
-  def getRecent(self, count, reversed=False):
+  def getRecent(self, count, reversed=False, delayOnly=False):
     result = [d for d in self.dataBuffer]
     result = result if (len(result) <= count) else result[-count:]
     if (reversed):
       result.reverse()
+    if delayOnly:
+      result = [{
+        'FetchTime': r['FetchTime'],
+        'Delays': [r["TFQKDSyncAlice"]["Delay"], r["TFQKDSyncBob"]["Delay"]]
+        } for r in result]
     return result
 
   def getRanged(self, begin, end, reversed=False):
@@ -128,74 +134,74 @@ class LongRandomNumberEncodingAnalyser(pytimetag.EncodingAnalyser):
       result['Configuration']['RandomNumbers'] = self.longRandomNumberID
     return result
 
-class QKDQBERAnalyser(pytimetag.Analyser):
-  def __init__(self, ifworker, channelCount, randomNumberLimit):
-    super().__init__()
-    self.worker = ifworker
-    self.channelCount = channelCount
-    self.randomNumberLimit = randomNumberLimit
-    self.aliceLongRandomNumberID = None
-    self.aliceLongRandomNumber = None
-    self.bobLongRandomNumberID = None
-    self.bobLongRandomNumber = None
-    self.aliceLongRandomNumberToBeUpdate = False
-    self.bobLongRandomNumberToBeUpdate = False
-    self.setConfiguration('AliceRandomNumbers', np.ones(1, dtype='int'), lambda x: True)
-    self.setConfiguration('BobRandomNumbers', np.ones(1, dtype='int'), lambda x: True)
-    self.setConfiguration('Period', 10000, pytimetag.Validator.float(0))
-    self.setConfiguration('PulsePosition', 5000, pytimetag.Validator.float(0))
-    self.setConfiguration('Gate', 1000, pytimetag.Validator.float(0))
-    self.setConfiguration('TriggerChannel', 0, pytimetag.Validator.int(0, channelCount - 1))
-    self.setConfiguration('Channel 1', 2, pytimetag.Validator.int(0, channelCount - 1))
-    self.setConfiguration('Channel 2', 3, pytimetag.Validator.int(0, channelCount - 1))
+# class QKDQBERAnalyser(pytimetag.Analyser):
+#   def __init__(self, ifworker, channelCount, randomNumberLimit):
+#     super().__init__()
+#     self.worker = ifworker
+#     self.channelCount = channelCount
+#     self.randomNumberLimit = randomNumberLimit
+#     self.aliceLongRandomNumberID = None
+#     self.aliceLongRandomNumber = None
+#     self.bobLongRandomNumberID = None
+#     self.bobLongRandomNumber = None
+#     self.aliceLongRandomNumberToBeUpdate = False
+#     self.bobLongRandomNumberToBeUpdate = False
+#     self.setConfiguration('AliceRandomNumbers', np.ones(1, dtype='int'), lambda x: True)
+#     self.setConfiguration('BobRandomNumbers', np.ones(1, dtype='int'), lambda x: True)
+#     self.setConfiguration('Period', 10000, pytimetag.Validator.float(0))
+#     self.setConfiguration('PulsePosition', 5000, pytimetag.Validator.float(0))
+#     self.setConfiguration('Gate', 1000, pytimetag.Validator.float(0))
+#     self.setConfiguration('TriggerChannel', 0, pytimetag.Validator.int(0, channelCount - 1))
+#     self.setConfiguration('Channel 1', 2, pytimetag.Validator.int(0, channelCount - 1))
+#     self.setConfiguration('Channel 2', 3, pytimetag.Validator.int(0, channelCount - 1))
 
-  def configure(self, paras):
-    if (paras.__contains__('AliceRandomNumbers')):
-      aliceRNS = paras['AliceRandomNumbers']
-      if isinstance(aliceRNS, str):
-        self.aliceLongRandomNumberID = aliceRNS
-        self.aliceLongRandomNumberToBeUpdate = True
-        # bytes = self.worker.TF_FileStorage.readMassive(self.aliceLongRandomNumberID)
-        # self.aliceLongRandomNumber = np.array(msgpack.unpackb(bytes))
-        # paras['AliceRandomNumbers'] = self.aliceLongRandomNumber
-        paras.pop('AliceRandomNumbers')
-      else:
-        self.aliceLongRandomNumberID = None
-        self.aliceLongRandomNumber = None
-    if (paras.__contains__('BobRandomNumbers')):
-      bobRNS = paras['BobRandomNumbers']
-      if isinstance(bobRNS, str):
-        self.bobLongRandomNumberID = bobRNS
-        self.bobLongRandomNumberToBeUpdate = True
-        # bytes = self.worker.TF_FileStorage.readMassive(self.bobLongRandomNumberID)
-        # self.bobLongRandomNumber = np.array(msgpack.unpackb(bytes))
-        # paras['BobRandomNumbers'] = self.bobLongRandomNumber
-        paras.pop('BobRandomNumbers')
-      else:
-        self.bobLongRandomNumberID = None
-        self.bobLongRandomNumber = None
-    super().configure(paras)
+#   def configure(self, paras):
+#     if (paras.__contains__('AliceRandomNumbers')):
+#       aliceRNS = paras['AliceRandomNumbers']
+#       if isinstance(aliceRNS, str):
+#         self.aliceLongRandomNumberID = aliceRNS
+#         self.aliceLongRandomNumberToBeUpdate = True
+#         # bytes = self.worker.TF_FileStorage.readMassive(self.aliceLongRandomNumberID)
+#         # self.aliceLongRandomNumber = np.array(msgpack.unpackb(bytes))
+#         # paras['AliceRandomNumbers'] = self.aliceLongRandomNumber
+#         paras.pop('AliceRandomNumbers')
+#       else:
+#         self.aliceLongRandomNumberID = None
+#         self.aliceLongRandomNumber = None
+#     if (paras.__contains__('BobRandomNumbers')):
+#       bobRNS = paras['BobRandomNumbers']
+#       if isinstance(bobRNS, str):
+#         self.bobLongRandomNumberID = bobRNS
+#         self.bobLongRandomNumberToBeUpdate = True
+#         # bytes = self.worker.TF_FileStorage.readMassive(self.bobLongRandomNumberID)
+#         # self.bobLongRandomNumber = np.array(msgpack.unpackb(bytes))
+#         # paras['BobRandomNumbers'] = self.bobLongRandomNumber
+#         paras.pop('BobRandomNumbers')
+#       else:
+#         self.bobLongRandomNumberID = None
+#         self.bobLongRandomNumber = None
+#     super().configure(paras)
 
-  def dataIncome(self, dataBlock):
-    if self.aliceLongRandomNumberToBeUpdate:
-      self.aliceLongRandomNumberToBeUpdate = False
-      bytes = self.worker.TF_FileStorage.readMassive(self.aliceLongRandomNumberID)
-      self.aliceLongRandomNumber = np.array(msgpack.unpackb(bytes))
-      paras = {'AliceRandomNumbers': self.aliceLongRandomNumber}
-      super().configure(paras)
-    if self.bobLongRandomNumberToBeUpdate:
-      self.bobLongRandomNumberToBeUpdate = False
-      bytes = self.worker.TF_FileStorage.readMassive(self.bobLongRandomNumberID)
-      self.bobLongRandomNumber = np.array(msgpack.unpackb(bytes))
-      paras = {'BobRandomNumbers': self.bobLongRandomNumber}
-      super().configure(paras)
-    result = super().dataIncome(dataBlock)
-    if result:
-      if self.aliceLongRandomNumberID:
-        result['Configuration']['AliceRandomNumbers'] = self.aliceLongRandomNumberID
-      if self.bobLongRandomNumberID:
-        result['Configuration']['BobRandomNumbers'] = self.bobLongRandomNumberID
-    return result
+#   def dataIncome(self, dataBlock):
+#     if self.aliceLongRandomNumberToBeUpdate:
+#       self.aliceLongRandomNumberToBeUpdate = False
+#       bytes = self.worker.TF_FileStorage.readMassive(self.aliceLongRandomNumberID)
+#       self.aliceLongRandomNumber = np.array(msgpack.unpackb(bytes))
+#       paras = {'AliceRandomNumbers': self.aliceLongRandomNumber}
+#       super().configure(paras)
+#     if self.bobLongRandomNumberToBeUpdate:
+#       self.bobLongRandomNumberToBeUpdate = False
+#       bytes = self.worker.TF_FileStorage.readMassive(self.bobLongRandomNumberID)
+#       self.bobLongRandomNumber = np.array(msgpack.unpackb(bytes))
+#       paras = {'BobRandomNumbers': self.bobLongRandomNumber}
+#       super().configure(paras)
+#     result = super().dataIncome(dataBlock)
+#     if result:
+#       if self.aliceLongRandomNumberID:
+#         result['Configuration']['AliceRandomNumbers'] = self.aliceLongRandomNumberID
+#       if self.bobLongRandomNumberID:
+#         result['Configuration']['BobRandomNumbers'] = self.bobLongRandomNumberID
+#     return result
 
 class TempStoreAnalyser(pytimetag.Analyser):
   def __init__(self):
@@ -249,8 +255,7 @@ def prepareAnalysers(workerRN, channelCount):
   analysers['MultiHistogram'] = pytimetag.HistogramAnalyser(channelCount)
   analysers['MultiHistogram'].turnOn({'Sync': 0, 'Signals': [2, 3], 'ViewStart': 0, 'ViewStop': 40000000, 'BinCount': 1000, 'Divide': 1})
   analysers['TFQKDEncoding'] = LongRandomNumberEncodingAnalyser(workerRN, channelCount, 256)
-  analysers['TFQKDEncoding'].turnOn({'Period': 10000, 'TriggerChannel': 1, 'SignalChannel': 4, 
-  'RandomNumbers': [0], 'PulsePerTrigger': 100000000,
+  analysers['TFQKDEncoding'].turnOn({'Period': 5000, 'TriggerChannel': 1, 'SignalChannel': 4, 'RandomNumbers': [0], 'PulsePerTrigger': 100000000,
   'Histograms': {
       'All Pulses': [i for i in range(128)],
       'All Signals': [i for i in range(64)],
@@ -261,8 +266,7 @@ def prepareAnalysers(workerRN, channelCount):
       'Z': [i for i in range(64) if i % 4 == 3],
   }})
   analysers['TFQKDEncoding2'] = LongRandomNumberEncodingAnalyser(workerRN, channelCount, 256)
-  analysers['TFQKDEncoding2'].turnOn({'Period': 10000, 'TriggerChannel': 0, 'SignalChannel': 5, 
-  'RandomNumbers': [0], 'PulsePerTrigger': 100000000,
+  analysers['TFQKDEncoding2'].turnOn({'Period': 5000, 'TriggerChannel': 0, 'SignalChannel': 5, 'RandomNumbers': [0], 'PulsePerTrigger': 100000000,
   'Histograms': {
       'All Pulses': [i for i in range(128)],
       'All Signals': [i for i in range(64)],
@@ -282,9 +286,16 @@ def prepareAnalysers(workerRN, channelCount):
   analysers['TFQKDSyncBobMonitor'].turnOn({'Period': 5000, 'TriggerChannel': 0, 'SignalChannel': 5, 'RandomNumbers': [0], 'PulsePosition': 2500, 'Histograms': {'Sync Bob Monitor': [i for i in range(64)]}})
   analysers['ChannelMonitor'] = pytimetag.FastCounterAnalyser()
   analysers['ChannelMonitor'].turnOn({'Channels': [4, 5], 'Frequency': 1000})
-  analysers['QKDQBER'] = QKDQBERAnalyser(workerRN, channelCount, 256)
+  # analysers['QKDQBER'] = QKDQBERAnalyser(workerRN, channelCount, 256)
   # analysers['QKDQBER'].turnOn({'AliceRandomNumbers': '2023-06-03 23-29-07.013601 R513371', 'BobRandomNumbers': '2023-06-03 23-30-47.632215 R298145', 'Period': 10000, 'PulsePosition': 5000, 'Gate': 1000, 'TriggerChannel': 0, 'Channel 1': 2, 'Channel 2': 3})
-  analysers['QKDQBER'].turnOn({'AliceRandomNumbers': [0], 'BobRandomNumbers': [0], 'Period': 10000, 'PulsePosition': 5000, 'Gate': 1000, 'TriggerChannel': 0, 'Channel 1': 2, 'Channel 2': 3})
+  # analysers['QKDQBER'].turnOn({'AliceRandomNumbers': [0], 'BobRandomNumbers': [0], 'Period': 10000, 'PulsePosition': 5000, 'Gate': 1000, 'TriggerChannel': 0, 'Channel 1': 2, 'Channel 2': 3})
+  analysers['QKDQBER'] = TFQKDQBERAnalyser(channelCount)
+  analysers['QKDQBER'].configure({
+    'AliceRandomNumbers': [(i) % 128 for i in range(128)], 'BobRandomNumbers': [(i) % 128 for i in range(128)], 
+    'TimeEachBlock': int(1e12), 'FrequencyFrame': int(1e11), 'PhaseFrame': int(2e8), 'IntensityFrame': int(1e9),
+    'Period': 5000, 'TriggerPeriod': 40000000, 'PulsePosition': 2500, 'Gate': 1000, 'GateRef': 1000, 
+    'TriggerChannel': 0, 'Channel 1': 2, 'Channel 2': 3, 'SyncChannelAlice': 4, 'SyncChannelBob': 5})
+  
   analysers['TempStore'] = TempStoreAnalyser()
   analysers['TempStore'].turnOn()
   return analysers
@@ -437,7 +448,7 @@ if __name__ == '__main__':
   defaultDelays = [float(s) for s in defaultDelaysStr.split(',')]
   forever = True
 
-  rt = ReadTimeTDC()
+  rt = RealTimeTDC()
 
   if not isSim:
     for i in range(len(triggerLevels)):
@@ -581,12 +592,12 @@ if __name__ == '__main__':
   for name in ['Counter', 'MultiHistogram', 'TFQKDEncoding', 'TFQKDEncoding2', 'ChannelMonitor', 'QKDQBER', 'TFQKDSyncAliceMonitor', 'TFQKDSyncBobMonitor', 'TempStore']:
     server.installAnalyser(name, analysers[name])
   for name in ['TFQKDSyncAlice', 'TFQKDSyncBob']:
-    server.installAnalyser(name, analysers[name], fastMode=False)  # TODO: remember！ change to True later
+    server.installAnalyser(name, analysers[name], fastMode=True)
 
-  # rt.analysers = {
-  #   'TFQKDSyncAlice': server.analysers['TFQKDSyncAlice'],
-  #   'TFQKDSyncBob': server.analysers['TFQKDSyncBob']
-  # }   # and here
+  rt.analysers = {
+    'TFQKDSyncAlice': server.analysers['TFQKDSyncAlice'],
+    'TFQKDSyncBob': server.analysers['TFQKDSyncBob']
+  }
   print('analysers installed')
 
   table = Table()
