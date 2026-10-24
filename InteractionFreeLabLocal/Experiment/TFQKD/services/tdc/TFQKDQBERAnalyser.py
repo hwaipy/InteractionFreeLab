@@ -63,8 +63,8 @@ class DataBlockParser:
     self.data2Channel = configs['Channel 2']
     self.syncAliceChannel = configs['SyncChannelAlice']
     self.syncBobChannel = configs['SyncChannelBob']
-    self.rnsAlice = np.array(configs['BobRandomNumbers'])
-    self.rnsBob = np.array(configs['AliceRandomNumbers'])
+    self.rnsAlice = np.array(configs['AliceRandomNumbers'])
+    self.rnsBob = np.array(configs['BobRandomNumbers'])
     self.matchedRandomNumbers, self.randomNumberBasisStat = self.generateMatchedRandomNumbers()
     self.intensityRatioThreshold = configs['IntensityRatioThreshold']
     self.intensityThreshold = configs['IntensityThreshold']

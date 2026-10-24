@@ -458,15 +458,18 @@ if __name__ == '__main__':
       2: ['Pulse', 100000000, 1000000, 1000], 3: ['Pulse', 100000000, 1000000, 1000],
       4: ['Pulse', 100000000, 1000000, 1000], 5: ['Pulse', 100000000, 1000000, 1000]})
 
-  syncDelays = [np.nan, np.nan]
+  # syncDelays = [np.nan, np.nan]
+  # qberStatus = {'text': None}
 
   def storePostProcessData(dataBlock, result):
-    delays = [result["TFQKDSyncAlice"]["Delay"], result["TFQKDSyncBob"]["Delay"]]
-    syncDelays[:] = delays
+    # delays = [result["TFQKDSyncAlice"]["Delay"], result["TFQKDSyncBob"]["Delay"]]
+    # syncDelays[:] = delays
     worker.blockingInvoker('Storage', timeout=2).append(storeCollection, result, fetchTime=dataBlock.creationTime)
         # worker.Storage.append(storeCollection, result, fetchTime=dataBlock.creationTime)
-    if 'QKDQBER' in result.keys() and result['QKDQBER'] is not None and (len(result['QKDQBER'].keys()) > 1):
-      print(DataBlockParseResult.toString(result['QKDQBER']))
+    # if 'QKDQBER' in result.keys() and result['QKDQBER'] is not None and (len(result['QKDQBER'].keys()) > 1):
+    #   qberStatus['text'] = DataBlockParseResult.toString(result['QKDQBER'])
+    # else:
+    #   qberStatus['text'] = None
 
   def storeRawData(dataBlock):
     datetimeStr = str(datetime.fromtimestamp(dataBlock.creationTime))
@@ -517,33 +520,7 @@ if __name__ == '__main__':
       self.ch0DeltaValues = []
       self.latestCH1ForFast = None
       self.funcTuneCH0 = funcTuneCH0
-      def ch0OffsetAdaptor(dataBlock):
-        ch0 = []
-        if dataBlock.sizes[1] > 0 and dataBlock.dataTimeEnd - dataBlock.dataTimeBegin > 500000000000:
-          # A complete second
-          # delta = np.average(((dataBlock.content[0] - dataBlock.content[1][0] + 20000000) % 40000000) - 20000000) - self.ch0Offset
-          # self.ch0DeltaValues.append(delta)
-          # if len(self.ch0DeltaValues) > 100: self.ch0DeltaValues = self.ch0DeltaValues[-100:]
-          # deltaCheckpointShortterm = np.average(self.ch0DeltaValues[-1:])
-          # deltaCheckpointLongterm = np.average(self.ch0DeltaValues[-1:])
-          # if np.abs(deltaCheckpointShortterm) > 1000:
-          #   self.ch0Offset += deltaCheckpointShortterm
-          #   print(f'CH0 offset adjusted by {deltaCheckpointShortterm} due to short-term check. Current delay = {self.ch0Offset}')
-          # elif np.abs(deltaCheckpointLongterm) > 200:
-          #   self.ch0Offset += deltaCheckpointLongterm
-          #   print(f'CH0 offset adjusted by {deltaCheckpointLongterm} due to long-term check. Current delay = {self.ch0Offset}')
-          # ch0 = dataBlock.sizes[1][0] 
-          ch0 = np.linspace(0, 1000000000000, 25000, endpoint=False) + dataBlock.content[1][0]
-        else:
-          if dataBlock.sizes[1] > 0:
-            self.latestCH1ForFast = dataBlock.content[1][0]
-          if self.latestCH1ForFast:
-            ch0 = np.linspace(0, 1000000000000, 25000, endpoint=False) + self.latestCH1ForFast
-            ch0 = ch0[(ch0 >= dataBlock.dataTimeBegin) & (ch0 < dataBlock.dataTimeEnd)]
-          
-        dataBlock.content[0] = ch0
-        return dataBlock
-
+  
       def ch1OffsetAdaptor(dataBlock):
         if dataBlock.sizes[1] == 0: return dataBlock
         current1PPSTime = dataBlock.content[1][0]
@@ -574,6 +551,9 @@ if __name__ == '__main__':
     def getDopplerShiftTimeRange(self):
       begin = 0 if self.dopplerUtil.startDopplerShiftAt is None else self.dopplerUtil.startDopplerShiftAt
       return [begin, begin + len(self.dopplerUtil.timingMap) * 0.01]
+
+    def getEncodingDelays():
+      pass
 
   server = TF_TDCServer(st, channelCount, storePostProcessData, storeRawData, rt.offer, storeAdaptedRawData, tuneCH0)
   server.setDelays(defaultDelays)
@@ -629,12 +609,18 @@ if __name__ == '__main__':
       f"最近 5 s RealTimeTDC 获取时间差 {rt.receivedTimeAve * 1000:.1f} ± {rt.receivedTimeStd * 1000:.1f} ms"
     )
 
-    delays = syncDelays[:]
-    delayMessage = Text(
-      f'Delays: Alice {(np.nan if delays[0] is None else delays[0] / 1000):9.2f} ns   '
-      f'Bob {(np.nan if delays[1] is None else delays[1] / 1000):9.2f} ns'
-    )
-    live.update(Group(table, delayMessage, message))
+    # delays = syncDelays[:]
+    # delayMessage = Text(
+    #   f'Delays: Alice {(np.nan if delays[0] is None else delays[0] / 1000):9.2f} ns   '
+    #   f'Bob {(np.nan if delays[1] is None else delays[1] / 1000):9.2f} ns'
+    # )
+    # display = [table, delayMessage, message]
+    display = [table, message]
+    # if server.isAnalyserOn('QKDQBER'):
+    #   display.append(Text(qberStatus['text'] or 'QBER: waiting for results...'))
+    # else:
+    #   qberStatus['text'] = None
+    live.update(Group(*display))
 
   server.runtimeMetaMonitor = monitor
   live.start()
