@@ -4,6 +4,11 @@ import numpy as np
 # from util import RNManager
 from numba import njit
 import msgpack
+import hashlib
+import io
+import json
+import zipfile
+from datetime import datetime, timezone, timedelta
 
 
 class TFQKDQBERAnalyser(Analyser):
@@ -31,8 +36,13 @@ class TFQKDQBERAnalyser(Analyser):
         self.setConfiguration('PhaseThreshold', 10, Validator.float(0))
 
     def analysis(self, dataBlock):
-      dbp = DataBlockParser(dataBlock, self.getConfigurations())
-      return dbp.parse()
+      configs = self.getConfigurations()
+      dbp = DataBlockParser(dataBlock, configs)
+      intermediate = dbp.parseIntermediate()
+      result = intermediate.statistics(dbp.intensityRatioThreshold, dbp.intensityThreshold, dbp.phaseThreshold)
+      result['Intermediate'] = QKDIntermediate.fromParser(
+          dbp, intermediate, configs, processing='tdc-adapted').pack()
+      return result
 
 class DataBlockParser:
   def __init__(self, dataBlock, configs):
@@ -87,8 +97,81 @@ class DataBlockParser:
     self.frequencyFrameNum = int(self.timeEachBlock / self.frequencyFrame)
     self.phaseFrameNum = int(self.timeEachBlock / self.phaseFrame)
     self.intensityFrameNum = int(self.timeEachBlock / self.intensityFrame)
+    if dataBlock is not None:
+      self.dataBlock, self.analysisWindowInfo = self.analysisWindow(dataBlock, configs)
+
+  def pulseCountStat(self):
+    """Exact cyclic-RN signal pulse counts, indexed [Alice, Bob, intensity frame]."""
+    rns = self.matchedRandomNumbers
+    codes = np.where((rns & 0xC00) == 0, ((rns >> 3) & 7) * 4 + (rns & 7), -1)
+    edges = np.arange(self.intensityFrameNum + 1, dtype=np.int64) * self.intensityFrame
+    limits = np.maximum(0, (edges - self.center + self.pulsePeriod - 1) // self.pulsePeriod)
+    starts, ends = limits[:-1], limits[1:]
+    counts = np.zeros((4, 4, self.intensityFrameNum), dtype=np.int64)
+    for a in range(4):
+      for b in range(4):
+        prefix = np.concatenate(([0], np.cumsum(codes == a * 4 + b, dtype=np.int64)))
+        def cumulative(indices):
+          return (indices // len(rns)) * prefix[-1] + prefix[indices % len(rns)]
+        counts[a, b] = cumulative(ends) - cumulative(starts)
+    return counts
+
+  @staticmethod
+  def rescaleTDCClock(block, frequency=25000, clockChannel=0, ppsChannel=1):
+    """Reproduce the server's frequencyRescaleAdaptor on historical Raw.
+
+    Raw storage is after channel delays but BEFORE the online adaptors. The
+    clock reference is 25 kHz for this server, independent of TriggerPeriod.
+    A per-block PPS origin is sufficient: the QBER parser uses relative times.
+    """
+    from pytimetag import DataBlock
+    if not np.isfinite(frequency) or frequency <= 0:
+      raise ValueError('Clock reference frequency must be positive and finite')
+    clocks, pps = block.content[clockChannel], block.content[ppsChannel]
+    if len(clocks) < 2 or not len(pps):
+      raise ValueError('TDC clock correction requires at least two clock events and a PPS event')
+    if np.any(clocks[1:] <= clocks[:-1]):
+      raise ValueError('Clock events must be strictly increasing')
+    measuredPeriod = (int(clocks[-1]) - int(clocks[0])) / (len(clocks) - 1)
+    scale = 1 / (measuredPeriod * frequency / 1e12)
+    if abs(scale - 1) > .01:
+      raise ValueError('Clock scale differs by over 1%; check reference frequency or missing clock pulses')
+    offset = -int(pps[0]) * scale
+    content = [_rescaleClockChannel(ch, scale, offset) for ch in block.content]
+    corrected = DataBlock.create(content, block.creationTime, block.dataTimeBegin * scale + offset,
+                                 block.dataTimeEnd * scale + offset, block.resolution)
+    return corrected, {'method': 'tdc-clock-v1', 'reference_frequency_hz': frequency,
+        'clock_channel': clockChannel, 'pps_channel': ppsChannel, 'scale': scale}
+
+  @staticmethod
+  def analysisWindow(block, configs):
+    """Keep detector/sync events in trigger-relative [0, TimeEachBlock), without mutation."""
+    from pytimetag import DataBlock
+    trigger = block.content[configs['TriggerChannel']]
+    if not len(trigger):
+      raise ValueError('No trigger events')
+    origin = int(trigger[0])
+    end = origin + configs['TimeEachBlock']
+    content = list(block.content)
+    excluded = {}
+    for channel in set(configs[k] for k in ('Channel 1', 'Channel 2', 'SyncChannelAlice', 'SyncChannelBob')):
+      events = content[channel]
+      if np.any(events[1:] < events[:-1]):
+        raise ValueError(f'Channel {channel} timestamps are not sorted')
+      left = int(np.searchsorted(events, origin, side='left'))
+      right = int(np.searchsorted(events, end, side='left'))
+      content[channel] = events[left:right]
+      excluded[str(channel)] = {'before': left, 'after': len(events) - right}
+    windowed = DataBlock.create(content, block.creationTime, block.dataTimeBegin, block.dataTimeEnd, block.resolution)
+    return windowed, {'origin_ps': origin, 'end_exclusive_ps': end,
+        'acquisition_begin_ps': int(block.dataTimeBegin), 'acquisition_end_ps': int(block.dataTimeEnd),
+        'excluded_events': excluded}
 
   def parse(self):
+    return self.parseIntermediate().statistics(self.intensityRatioThreshold, self.intensityThreshold, self.phaseThreshold)
+
+  def parseIntermediate(self):
+    """Return unsifted per-frame arrays for offline parameter scans."""
     # Alice、Bob同步路计数统计
     aliceSyncCounts = self.countStat(channelNum=self.syncAliceChannel)
     bobSyncCounts = self.countStat(channelNum=self.syncBobChannel)
@@ -126,7 +209,7 @@ class DataBlockParser:
       detectionStatistics=detectionStatistics,
       phaseErrorStatistics=phaseErrors,
       phaseDeltas=phaseDeltas,
-    ).statistics(self.intensityRatioThreshold, self.intensityThreshold, self.phaseThreshold)
+    )
   
   def generateMatchedRandomNumbers(self):
     # RGPPPPAAABBB    RG 10 is Ref, 01 is Gap, 00 is Signal; PPPP is phase difference; AAA is Alice basis; BBB is Bob basis
@@ -161,7 +244,7 @@ class DataBlockParser:
 
   def countStat(self, channelNum):
     # TODO: 这里要跟 DopplerUtil 的处理方式结合看一下，是否能在那边直接把 - triggerList[0] 的问题解决掉
-    return np.histogram(self.dataBlock.content[channelNum] - self.dataBlock.content[0][0], bins=self.intensityFrameNum, range=(0, self.timeEachBlock))[0]
+    return np.histogram(self.dataBlock.content[channelNum] - self.dataBlock.content[self.triggerChannel][0], bins=self.intensityFrameNum, range=(0, self.timeEachBlock))[0]
 
   # 对齐时序(对数据综合处理)
   # 将1s内所有探测事件处理成 deltametas
@@ -243,7 +326,7 @@ class DataBlockParseResult:
     for i in range(len(aliceSyncCounts)):
       ca = aliceSyncCounts[i]
       cb = bobSyncCounts[i]
-      if (ca > intensityThreshold and cb > intensityThreshold and ca < cb * intensityRatioThreshold and cb < ca * intensityRatioThreshold) or True:
+      if ca > intensityThreshold and cb > intensityThreshold and ca < cb * intensityRatioThreshold and cb < ca * intensityRatioThreshold:
         valid += 1
         eX += XX[i][phaseThreshold]
         eY += YY[i][phaseThreshold]
@@ -315,6 +398,121 @@ class DataBlockParseResult:
       resolveArray('phaseDeltas'),
     )
     
+class QKDIntermediate:
+  """Versioned lossless offline statistics; codec is shared by TDC and local tools.
+
+  No pickle or raw events. Phase bins are noncumulative on disk; public
+  phaseErrorStatistics restores the original cumulative counts exactly.
+  """
+  VERSION = 1
+  ALGORITHM = 'TFQKDQBER-frequency-zero-v1'
+  ARRAY_NAMES = ('syncCountsAlice', 'syncCountsBob', 'pulseCounts',
+                 'detectionStatistics', 'phaseHistogram')
+
+  def __init__(self, metadata, arrays):
+    self.metadata = metadata
+    for name in self.ARRAY_NAMES:
+      setattr(self, name, arrays[name])
+    self.validate()
+    self.phaseErrorStatistics = np.cumsum(self.phaseHistogram, axis=2, dtype=np.uint64)
+
+  @staticmethod
+  def compactCounts(array):
+    array = np.asarray(array)
+    if array.dtype.kind not in 'iu' or np.any(array < 0):
+      raise ValueError('Counts must be nonnegative integers')
+    maximum = int(array.max()) if array.size else 0
+    return array.astype(np.uint32 if maximum <= np.iinfo(np.uint32).max else np.uint64)
+
+  @classmethod
+  def fromParser(cls, parser, result, configs, processing):
+    # int64 subtraction prevents unsigned wraparound and detects nonmonotonic statistics.
+    cumulative = result.phaseErrorStatistics.astype(np.int64)
+    histogram = np.diff(cumulative, axis=2, prepend=np.zeros_like(cumulative[:, :, :1, :]))
+    fixed = {k: v for k, v in configs.items() if k not in (
+        'AliceRandomNumbers', 'BobRandomNumbers', 'PhaseThreshold', 'IntensityThreshold', 'IntensityRatioThreshold')}
+    digest = hashlib.sha256()
+    for rns in (parser.rnsAlice, parser.rnsBob):
+      digest.update(np.asarray(rns, dtype='<i8').tobytes())
+    metadata = {'format_version': cls.VERSION, 'algorithm': cls.ALGORITHM, 'phase_bins': 64,
+        'basis_order': ['O', 'X', 'Y', 'Z'], 'configuration': fixed,
+        'random_numbers_sha256': digest.hexdigest(), 'processing': processing,
+        'FetchTime': datetime.fromtimestamp(float(parser.dataBlock.creationTime),
+            tz=timezone(timedelta(hours=8))).isoformat(),
+        'analysis_window': parser.analysisWindowInfo}
+    arrays = {'syncCountsAlice': result.syncCountsAlice, 'syncCountsBob': result.syncCountsBob,
+        'pulseCounts': parser.pulseCountStat(), 'detectionStatistics': result.detectionStatistics,
+        'phaseHistogram': histogram}
+    return cls(metadata, {k: cls.compactCounts(v) for k, v in arrays.items()})
+
+  def validate(self):
+    m = self.metadata
+    if m.get('format_version') != self.VERSION or m.get('algorithm') != self.ALGORITHM:
+      raise ValueError('Unsupported intermediate version or algorithm')
+    if m.get('phase_bins') != 64 or m.get('basis_order') != ['O', 'X', 'Y', 'Z']:
+      raise ValueError('Unsupported phase bins or basis order')
+    config = m['configuration']
+    duration, frame = config['TimeEachBlock'], config['IntensityFrame']
+    if not isinstance(duration, int) or not isinstance(frame, int) or frame <= 0 or duration <= 0 or duration % frame:
+      raise ValueError('Invalid intermediate duration/frame')
+    frames = duration // frame
+    expected = {'syncCountsAlice': (frames,), 'syncCountsBob': (frames,),
+        'pulseCounts': (4, 4, frames), 'detectionStatistics': (4, 4, frames),
+        'phaseHistogram': (4, frames, 64, 2)}
+    for name, shape in expected.items():
+      array = getattr(self, name)
+      if array.shape != shape or array.dtype.kind != 'u' or array.dtype.itemsize not in (4, 8):
+        raise ValueError(f'Invalid intermediate array {name}: {array.shape}, {array.dtype}')
+    if not isinstance(m.get('processing'), str) or not m['processing']:
+      raise ValueError('Missing processing provenance')
+    if datetime.fromisoformat(m['FetchTime']).tzinfo is None:
+      raise ValueError('Intermediate FetchTime must have a timezone')
+    if m['analysis_window']['end_exclusive_ps'] - m['analysis_window']['origin_ps'] != duration:
+      raise ValueError('Invalid intermediate analysis window')
+
+  def compatibilityKey(self):
+    """Allow RN changes, but reject mixing different gates, frame sizes or corrections."""
+    return json.dumps({k: self.metadata[k] for k in (
+        'format_version', 'algorithm', 'phase_bins', 'basis_order', 'configuration', 'processing')}, sort_keys=True)
+
+  def pack(self):
+    self.validate()
+    out = io.BytesIO()
+    metadata = np.frombuffer(json.dumps(self.metadata, sort_keys=True).encode('utf-8'), dtype=np.uint8)
+    np.savez_compressed(out, metadata=metadata, **{k: getattr(self, k) for k in self.ARRAY_NAMES})
+    return out.getvalue()
+
+  @classmethod
+  def unpack(cls, payload):
+    if not isinstance(payload, (bytes, bytearray, memoryview)):
+      raise ValueError('Intermediate must be binary bytes')
+    try:
+      with zipfile.ZipFile(io.BytesIO(payload)) as z:
+        expected = {k + '.npy' for k in (*cls.ARRAY_NAMES, 'metadata')}
+        if len(z.infolist()) != len(expected) or set(z.namelist()) != expected:
+          raise ValueError('Invalid intermediate archive fields')
+        if sum(item.file_size for item in z.infolist()) > 128 * 1024 * 1024:
+          raise ValueError('Intermediate archive exceeds 128 MiB decoded size')
+      with np.load(io.BytesIO(payload), allow_pickle=False) as archive:
+        header = archive['metadata']
+        if header.dtype != np.uint8 or header.ndim != 1:
+          raise ValueError('Invalid intermediate metadata')
+        metadata = json.loads(header.tobytes().decode('utf-8'))
+        arrays = {k: archive[k] for k in cls.ARRAY_NAMES}
+      return cls(metadata, arrays)
+    except (KeyError, TypeError, OSError, zipfile.BadZipFile, UnicodeError) as exc:
+      raise ValueError(f'Invalid intermediate archive: {exc}') from exc
+
+
+@njit(cache=True)
+def _rescaleClockChannel(channel, scale, offset):
+    # Same arithmetic order as rescaleChannel in TF_TDCServer, but never mutate Raw.
+    output = np.empty_like(channel)
+    for i in range(len(channel)):
+        output[i] = channel[i] * scale + offset
+    return output
+
+
 @njit(cache=True)
 def deltaMeta2JIT(dataList1, dataList2, rns, phaseFrame, triggerPeriod, pulsePeriod, center, gateSignal, gateRef, deltaMetasSignalBuffer, deltaMetasRefBuffer): # the last two args are pre-allocated buffers (must be uint64), to inhence performance
     assert isinstance(phaseFrame, int)
