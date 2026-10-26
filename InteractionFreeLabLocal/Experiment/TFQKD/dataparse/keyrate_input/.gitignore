@@ -1,0 +1,5 @@
+__pycache__/
+results/
+intermediate/
+batch_output/
+smoke_output/
