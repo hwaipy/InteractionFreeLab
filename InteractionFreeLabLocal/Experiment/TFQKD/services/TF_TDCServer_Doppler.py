@@ -4,7 +4,7 @@ from Instrument.tdc.SwabianTimeTag.SwabianTimeTag import SwabianTimeTag
 from Instrument.tdc.TDCServer import TDCServer
 import numpy as np
 import pytimetag
-from interactionfreepy import IFWorker, IFLoop
+from interactionfreepy import IFBroker, IFWorker, IFLoop
 import msgpack
 import numba
 from pytimetag import DataBlock
@@ -23,6 +23,7 @@ from threading import Thread
 import urllib
 from rich.console import Group
 from rich.text import Text
+from tdc.SyncAnalyser import SyncAnalyser
 
 class ReadTimeTDC:
   def __init__(self):
@@ -31,10 +32,14 @@ class ReadTimeTDC:
     self.receivedTimes = []
     self.receivedTimeAve = np.nan
     self.receivedTimeStd = np.nan
+    self.sequence = 0
 
   def offer(self, data):
     # print(f'one new rt datablock at {datetime.now()}')
-    self.receivedTimes.append(time.time())
+    offeredAt = time.time()
+    self.sequence += 1
+    data = dict(data, OfferTime=offeredAt, Sequence=self.sequence)
+    self.receivedTimes.append(offeredAt)
     self.dataBuffer.append(data)
     if len(self.receivedTimes) > 10 * 1800:
       self.receivedTimes.pop(0)
@@ -47,11 +52,20 @@ class ReadTimeTDC:
       self.receivedTimeAve = np.average(diffs)
       self.receivedTimeStd = np.std(diffs)
 
-  def getRecent(self, count, reversed=False):
+  def getRecent(self, count, reversed=False, delayOnly=False):
     result = [d for d in self.dataBuffer]
     result = result if (len(result) <= count) else result[-count:]
     if (reversed):
       result.reverse()
+    if delayOnly:
+      result = [{
+        'FetchTime': r['FetchTime'],
+        'OfferTime': r['OfferTime'],
+        'Sequence': r['Sequence'],
+        'ProcessingTime': r.get('ExecutionTimes', {}).get('Overall'),
+        'Delays': [None if r[f'TFQKDSync{side}'] is None else r[f'TFQKDSync{side}']['Delay']
+                   for side in ['Alice', 'Bob']]
+      } for r in result]
     return result
 
   def getRanged(self, begin, end, reversed=False):
@@ -94,6 +108,16 @@ class ReadTimeTDC:
   #     return center if valid else np.nan
   #   return np.average([d['FetchTime'] / 1000.0 for d in data]), estimateCenter(target)
 
+def startLocalRealTimeTDC(rt, serviceName='RealTimeTDC', binding='tcp://*:2240'):
+  """Expose the same realtime buffer through an additional LAN broker."""
+  broker = IFBroker(binding)
+  host = broker.address[1]
+  if host in ['*', '0.0.0.0']:
+    host = '127.0.0.1'
+  worker = IFWorker(f'tcp://{host}:{broker.address[2]}', serviceName, rt, timeout=5)
+  return broker, worker
+
+
 class LongRandomNumberEncodingAnalyser(pytimetag.EncodingAnalyser):
   def __init__(self, ifworker, channelCount, randomNumberLimit):
     super().__init__(channelCount, randomNumberLimit)
@@ -125,6 +149,23 @@ class LongRandomNumberEncodingAnalyser(pytimetag.EncodingAnalyser):
     if result and self.longRandomNumberID:
       result['Configuration']['RandomNumbers'] = self.longRandomNumberID
     return result
+
+class RealTimeSyncAnalyser(SyncAnalyser):
+  """Compute fast delays without replacing the stored encoding analyser."""
+  def __init__(self, source):
+    super().__init__(source.channelCount, source.randomNumberLimit)
+    self.source = source
+
+  def dataIncome(self, dataBlock):
+    if not self.source.isTurnedOn():
+      return None
+    # Keep the existing server configuration entry point. Random-number IDs
+    # are resolved by the original LongRandomNumberEncodingAnalyser as before.
+    configuration = self.source.getConfigurations()
+    configuration['PulsePosition'] = configuration['Period'] / 2
+    self.turnOn(configuration)
+    return super().dataIncome(dataBlock)
+
 
 class QKDQBERAnalyser(pytimetag.Analyser):
   def __init__(self, ifworker, channelCount, randomNumberLimit):
@@ -433,6 +474,8 @@ if __name__ == '__main__':
   channelCount = 16
   workerRN = IFWorker(ifserver)
   analysers = prepareAnalysers(workerRN, channelCount)
+  fastAnalysers = {name: RealTimeSyncAnalyser(analysers[name])
+                   for name in ['TFQKDSyncAlice', 'TFQKDSyncBob']}
 
   st = SwabianTimeTag('SIM' if isSim else sn, 1)
   triggerLevels = [float(s) for s in triggerLevelsStr.split(',')]
@@ -570,16 +613,23 @@ if __name__ == '__main__':
   # if isSim: server.startDopplerShift(int(datetime.now().timestamp()) + 20)
 
   JITasAIT(analysers)
+  JITasAIT(fastAnalysers)
   print('done JITasAIT')
 
   worker = IFWorker(ifserver, serviceName, server, force=True)
   workerRTT = IFWorker(ifserver, serviceNameRTT, rt, force=True)
+  localBrokerBinding = os.environ.get('TF_TDC_LOCAL_BROKER_BIND', 'tcp://*:2240')
+  localBroker, localWorkerRTT = startLocalRealTimeTDC(rt, serviceNameRTT, localBrokerBinding)
+  print(f'Local RealTimeTDC broker listening at {localBrokerBinding}, service={serviceNameRTT}')
   print('worker started')
 
   for name in ['Counter', 'MultiHistogram', 'TFQKDEncoding', 'TFQKDEncoding2', 'ChannelMonitor', 'QKDQBER', 'TFQKDSyncAliceMonitor', 'TFQKDSyncBobMonitor', 'TempStore']:
     server.installAnalyser(name, analysers[name])
   for name in ['TFQKDSyncAlice', 'TFQKDSyncBob']:
-    server.installAnalyser(name, analysers[name], fastMode=True)
+    server.installAnalyser(name, analysers[name])
+    # installAnalyser(fastMode=True) shares one instance with post-processing.
+    # Use a separate fast instance so stored per-second results stay unchanged.
+    server.analysersFastMode[name] = fastAnalysers[name]
 
   rt.analysers = {
     'TFQKDSyncAlice': server.analysers['TFQKDSyncAlice'],
