@@ -26,13 +26,28 @@ from rich.text import Text
 from tdc.SyncAnalyser import SyncAnalyser
 
 class ReadTimeTDC:
-  def __init__(self):
+  def __init__(self, blockCombiner=None):
+    self.blockCombiner = blockCombiner
     self.dataBuffer = []
     self.analysers = {}
     self.receivedTimes = []
     self.receivedTimeAve = np.nan
     self.receivedTimeStd = np.nan
     self.sequence = 0
+
+  def setRealtimeBlockDuration(self, seconds):
+    """Request 1 ms..1 s windows; apply after the current window completes."""
+    if self.blockCombiner is None:
+      raise RuntimeError('No realtime acquisition stream is attached')
+    return self.blockCombiner.setBlockDuration(seconds)
+
+  def getRealtimeBlockStatus(self):
+    if self.blockCombiner is None:
+      raise RuntimeError('No realtime acquisition stream is attached')
+    return self.blockCombiner.getBlockStatus()
+
+  def getRealtimeBlockDuration(self):
+    return self.getRealtimeBlockStatus()['ActiveSeconds']
 
   def offer(self, data):
     # print(f'one new rt datablock at {datetime.now()}')
@@ -482,7 +497,7 @@ if __name__ == '__main__':
   defaultDelays = [float(s) for s in defaultDelaysStr.split(',')]
   forever = True
 
-  rt = ReadTimeTDC()
+  rt = ReadTimeTDC(st.conbinerByTime)
 
   if not isSim:
     for i in range(len(triggerLevels)):

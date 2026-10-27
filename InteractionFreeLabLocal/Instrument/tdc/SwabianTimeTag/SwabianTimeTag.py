@@ -5,7 +5,8 @@ import sys
 import numpy as np
 import numba
 from pytimetag import DataBlock
-from threading import Thread
+from threading import Thread, Lock
+import math
 from queue import Queue
 from datetime import datetime
 
@@ -104,26 +105,23 @@ class TimeTagDataStreamConbiner:
     self.dataBlockQueue = Queue()
     self.currentSectionStart = None
     self.queueSize = queueSize
+    self._durationLock = Lock()
+    self._pendingRange = None
+    self._sectionBegin = None
 
   def __searchForSplit(self, timestamps, channels):
-    if self.splitBy is None:
+    p = np.where(channels == self.splitBy)[0]
+    if len(p) > 0:
       if self.splitDataTime is None:
-        self.splitDataTime = timestamps[0]
-      p = np.searchsorted(timestamps, self.splitDataTime)
-      if p < len(timestamps):
-        self.splitDataTime += self.splitDataRange
-        return p
-    else:
-      p = np.where(channels == self.splitBy)[0]
-      if len(p) > 0:
-        if self.splitDataTime == None:
-          self.splitDataTime = [timestamps[p[0]]]
-        else:
-          self.splitDataTime = [self.splitDataTime[-1], timestamps[p[0]]]
-        return p[0]
+        self.splitDataTime = [timestamps[p[0]]]
+      else:
+        self.splitDataTime = [self.splitDataTime[-1], timestamps[p[0]]]
+      return p[0]
     return None
 
   def deal(self, timestamps, channels):
+    if self.splitBy is None:
+      return self._dealTimeRanged(timestamps, channels)
     newDB = False
     splitPoint = self.__searchForSplit(timestamps, channels)
     if splitPoint is None:
@@ -137,13 +135,8 @@ class TimeTagDataStreamConbiner:
       else:
         ts = numba.typed.List(self.timestampsBuffer + [timestamps[:splitPoint]])
         cs = numba.typed.List(self.channelsBuffer + [channels[:splitPoint]])
-        t2 = time.time()
-        if self.splitBy is None:
-          dataTimeBegin = self.splitDataTime - self.splitDataRange * 2
-          dataTimeEnd = self.splitDataTime - self.splitDataRange
-        else:
-          dataTimeBegin = self.splitDataTime[0]
-          dataTimeEnd = self.splitDataTime[1]
+        dataTimeBegin = self.splitDataTime[0]
+        dataTimeEnd = self.splitDataTime[1]
         self.dataBlockQueue.put(DataBlock.create(generateDataBlockContent(ts, cs), self.currentSectionStart, int(dataTimeBegin), int(dataTimeEnd)))
         newDB = True
         if self.dataBlockQueue.qsize() > self.queueSize:
@@ -153,6 +146,68 @@ class TimeTagDataStreamConbiner:
         self.channelsBuffer = [channels[splitPoint:]]
       self.currentSectionStart = time.time()
       return newDB
+
+  def setBlockDuration(self, seconds):
+    if self.splitBy is not None:
+      raise RuntimeError('Runtime duration applies only to time-based blocks')
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+      raise ValueError('Block duration must be a number in seconds')
+    if not math.isfinite(seconds) or not 0.001 <= seconds <= 1.0:
+      raise ValueError('Realtime block duration must be between 0.001 and 1.0 seconds')
+    duration = int(round(seconds * 1e12))
+    with self._durationLock:
+      if self._sectionBegin is None:
+        self.splitDataRange = duration
+      else:
+        # Last request wins; requesting the active duration cancels an update.
+        self._pendingRange = None if duration == self.splitDataRange else duration
+      return self._status()
+
+  def _status(self):
+    return {'ActiveSeconds': self.splitDataRange / 1e12,
+            'PendingSeconds': None if self._pendingRange is None else self._pendingRange / 1e12}
+
+  def getBlockStatus(self):
+    if self.splitBy is not None:
+      raise RuntimeError('Runtime duration applies only to time-based blocks')
+    with self._durationLock:
+      return self._status()
+
+  def _dealTimeRanged(self, timestamps, channels):
+    if len(timestamps) == 0:
+      return False
+    with self._durationLock:
+      if self._sectionBegin is None:
+        self._sectionBegin = int(timestamps[0])
+        self.splitDataTime = self._sectionBegin + self.splitDataRange
+        self.timestampsBuffer, self.channelsBuffer = [], []
+        self.currentSectionStart = time.time()
+    position = 0
+    emitted = False
+    # An input batch can cross several windows, especially after shortening.
+    while self.splitDataTime <= timestamps[-1]:
+      end = self.splitDataTime
+      splitPoint = int(np.searchsorted(timestamps, end, side='left'))
+      ts = numba.typed.List(self.timestampsBuffer + [timestamps[position:splitPoint]])
+      cs = numba.typed.List(self.channelsBuffer + [channels[position:splitPoint]])
+      block = DataBlock.create(generateDataBlockContent(ts, cs), self.currentSectionStart,
+                               self._sectionBegin, end)
+      self.dataBlockQueue.put(block)
+      if self.dataBlockQueue.qsize() > self.queueSize:
+        self.dataBlockQueue.get()
+      emitted = True
+      self.timestampsBuffer, self.channelsBuffer = [], []
+      position = splitPoint
+      with self._durationLock:
+        self._sectionBegin = end
+        if self._pendingRange is not None:
+          self.splitDataRange = self._pendingRange
+          self._pendingRange = None
+        self.splitDataTime = end + self.splitDataRange
+      self.currentSectionStart = time.time()
+    self.timestampsBuffer.append(timestamps[position:])
+    self.channelsBuffer.append(channels[position:])
+    return emitted
 
 @numba.njit(cache=True)
 def find_first(arr, target):
