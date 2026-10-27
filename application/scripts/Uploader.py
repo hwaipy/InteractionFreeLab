@@ -24,6 +24,11 @@ ignores = [
   '/.vscode/',
   '/__pycache__/',
   '/.git/',
+  # Generated analysis results, intermediate caches, and acquisition logs.
+  r'/(?:results|intermediate(?:_[^/]+)?|mems_compensation_scans|smoke_output)/',
+  r'(?i)\.(?:npz|npy|datablock|jsonl|log)$',
+  r'/Experiment/TFQKD/clockDrift/output\.csv$',
+  r'/Experiment/MDIQKD/DataProcess/DATA_FILE\.csv$',
 ]
 version = '0.1'
 
@@ -38,9 +43,12 @@ class FileMapping:
     if not self.ignore: self.__prepare()
 
   def __checkIgnore(self):
-    for p in FileMapping.ignorePatterns:
-      if (p.search(self.sourceFile)): return True
-    return False
+    return self.isIgnored(self.sourceFile)
+
+  @classmethod
+  def isIgnored(cls, path):
+    path = path.replace('\\', '/')
+    return any(p.search(path) for p in cls.ignorePatterns)
 
   def __prepare(self):
     f = open(self.sourceFile, 'rb')
@@ -61,6 +69,9 @@ def prepareFileMappings():
     filter = (lambda file: True) if len(mapping) <= 2 else mapping[2]
 
     for path, dir_list, file_list in os.walk(source):
+      # Do not descend into excluded data/cache directories.
+      dir_list[:] = [d for d in dir_list
+                     if not FileMapping.isIgnored(os.path.join(path, d) + '/')]
       targetPath = os.path.join(target, os.path.relpath(path, source))
       for file in file_list:
         sourceFile = os.path.join(path, file).replace('\\.\\', '\\').replace('\\', '/')
