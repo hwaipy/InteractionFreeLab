@@ -49,6 +49,19 @@ class ReadTimeTDC:
   def getRealtimeBlockDuration(self):
     return self.getRealtimeBlockStatus()['ActiveSeconds']
 
+  def configureAnalyser(self, name, paras):
+    """Set the fast analyser's independent PulsePosition, in ps."""
+    if set(paras) - {'PulsePosition'}:
+      raise ValueError('Only PulsePosition is configured here; configure shared parameters through TDCServer')
+    self.analysers[name].configure(paras)
+
+  def getAnalyserConfiguration(self, name):
+    analyser = self.analysers[name]
+    configuration = analyser.source.getConfigurations()
+    configuration['PulsePosition'] = analyser.getConfiguration('PulsePosition')
+    configuration['MinimumCounts'] = analyser.minimumCounts
+    return configuration
+
   def offer(self, data):
     # print(f'one new rt datablock at {datetime.now()}')
     offeredAt = time.time()
@@ -78,6 +91,10 @@ class ReadTimeTDC:
         'OfferTime': r['OfferTime'],
         'Sequence': r['Sequence'],
         'ProcessingTime': r.get('ExecutionTimes', {}).get('Overall'),
+        'SyncStatistics': {
+          side: None if r[f'TFQKDSync{side}'] is None else r[f'TFQKDSync{side}'].get('SyncStatistics')
+          for side in ['Alice', 'Bob']
+        },
         'Delays': [None if r[f'TFQKDSync{side}'] is None else r[f'TFQKDSync{side}']['Delay']
                    for side in ['Alice', 'Bob']]
       } for r in result]
@@ -168,8 +185,11 @@ class LongRandomNumberEncodingAnalyser(pytimetag.EncodingAnalyser):
 class RealTimeSyncAnalyser(SyncAnalyser):
   """Compute fast delays without replacing the stored encoding analyser."""
   def __init__(self, source):
-    super().__init__(source.channelCount, source.randomNumberLimit)
+    super().__init__(source.channelCount, source.randomNumberLimit, minimumCounts=200, reportStatistics=True)
     self.source = source
+    self.setConfiguration('PulsePosition', 5000,
+                          lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+                          and math.isfinite(v) and v >= 0)
 
   def dataIncome(self, dataBlock):
     if not self.source.isTurnedOn():
@@ -177,7 +197,8 @@ class RealTimeSyncAnalyser(SyncAnalyser):
     # Keep the existing server configuration entry point. Random-number IDs
     # are resolved by the original LongRandomNumberEncodingAnalyser as before.
     configuration = self.source.getConfigurations()
-    configuration['PulsePosition'] = configuration['Period'] / 2
+    # Keep the independent PulsePosition (default 5000 ps) when refreshing
+    # shared encoding settings from the original analyser.
     self.turnOn(configuration)
     return super().dataIncome(dataBlock)
 
@@ -498,6 +519,7 @@ if __name__ == '__main__':
   forever = True
 
   rt = ReadTimeTDC(st.conbinerByTime)
+  rt.analysers = fastAnalysers
 
   if not isSim:
     for i in range(len(triggerLevels)):
@@ -646,10 +668,6 @@ if __name__ == '__main__':
     # Use a separate fast instance so stored per-second results stay unchanged.
     server.analysersFastMode[name] = fastAnalysers[name]
 
-  rt.analysers = {
-    'TFQKDSyncAlice': server.analysers['TFQKDSyncAlice'],
-    'TFQKDSyncBob': server.analysers['TFQKDSyncBob']
-  }
   print('analysers installed')
 
   table = Table()

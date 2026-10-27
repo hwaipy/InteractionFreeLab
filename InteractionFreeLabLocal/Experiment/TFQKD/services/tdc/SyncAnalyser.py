@@ -8,11 +8,13 @@ from numba import njit
 import numpy as np
 
 class SyncAnalyser(EncodingAnalyser):
-  def __init__(self, channelCount, randomNumberLimit, debug=False):
+  def __init__(self, channelCount, randomNumberLimit, debug=False, minimumCounts=1000, reportStatistics=False):
     super().__init__(channelCount, randomNumberLimit)
     self.channelCount = channelCount
     self.randomNumberLimit = randomNumberLimit
     self.debug = debug
+    self.minimumCounts = minimumCounts
+    self.reportStatistics = reportStatistics
     self.setConfiguration('PulsePosition', 5000, Validator.float(0))
 
   def analysis(self, dataBlock):
@@ -28,13 +30,40 @@ class SyncAnalyser(EncodingAnalyser):
 
     totalPeriod = period * len(randomNumbers)
 
+    counts = int(len(dataBlock.content[signalChannel]))
+    statistics = None
+    if self.reportStatistics:
+      duration = float((dataBlock.dataTimeEnd - dataBlock.dataTimeBegin) * dataBlock.resolution)
+      statistics = {
+        'SignalChannel': signalChannel, 'TriggerChannel': triggerChannel,
+        'TriggerCounts': int(len(dataBlock.content[triggerChannel])),
+        'BlockDurationS': duration, 'InputCounts': counts,
+        'InputCountRateHz': counts / duration if duration > 0 else None,
+        'MinimumCounts': self.minimumCounts, 'MinimumPeakToMean': 3,
+        'CentroidBinThresholdFraction': 0.3,
+        'HistogramCounts': 0, 'AllInputHistogrammed': False,
+        'CentroidCounts': 0, 'CentroidCountRateHz': 0 if duration > 0 else None,
+        'CentroidFraction': 0 if counts else None,
+        'ShiftCounts': 0, 'PeakToMean': None, 'Valid': False,
+        'InvalidReason': 'no_trigger',
+      }
+      result['SyncStatistics'] = statistics
+      if not statistics['TriggerCounts']:
+        result['Delay'] = None
+        return result
+
     histogramInPulse = histogramJIT(dataBlock.content[signalChannel], dataBlock.content[triggerChannel][0], period, resolution)  # TODO: 统一解决begin的问题
       # tick.tick('histogram computed')
 
     # check valid:
     extinctionRatio = max(histogramInPulse) / (np.mean(histogramInPulse) + 1e-9)
-    counts = np.sum(dataBlock.content[signalChannel].shape[0])
-    valid = extinctionRatio >= 3 and counts >= 1000
+    valid = extinctionRatio >= 3 and counts >= self.minimumCounts
+    if statistics is not None:
+      histogramCounts = int(np.sum(histogramInPulse, dtype=np.uint64))
+      statistics.update(HistogramCounts=histogramCounts, AllInputHistogrammed=histogramCounts == counts,
+                        PeakToMean=float(extinctionRatio), Valid=bool(valid),
+                        InvalidReason=None if valid else
+                            ('insufficient_counts' if counts < self.minimumCounts else 'low_peak_to_mean'))
     if self.debug:
       print(extinctionRatio, counts)
       print(randomNumbers[:20])
@@ -45,11 +74,18 @@ class SyncAnalyser(EncodingAnalyser):
       if np.abs(pulsePositionEstimated - pulsePosition) > period / 4:
         times[: int(binCount / 2)] += period
       validPulseIndices = np.where(histogramInPulse >= np.max(histogramInPulse) * 0.3)[0]
+      if statistics is not None:
+        centroidCounts = int(np.sum(histogramInPulse[validPulseIndices], dtype=np.uint64))
+        statistics.update(CentroidCounts=centroidCounts,
+                          CentroidCountRateHz=centroidCounts / duration if duration > 0 else None,
+                          CentroidFraction=centroidCounts / counts if counts else None)
       pulsePositionEstimated = np.mean(times[validPulseIndices] * histogramInPulse[validPulseIndices]) / np.mean(histogramInPulse[validPulseIndices])
 
       deltaInPulse = pulsePositionEstimated - pulsePosition
       # tick.tick('estimating delta')
       pulseCounts = computePulseCountJIT(dataBlock.content[signalChannel], dataBlock.content[triggerChannel][0] + deltaInPulse, period, totalPeriod, len(randomNumbers))
+      if statistics is not None:
+        statistics['ShiftCounts'] = int(np.sum(pulseCounts, dtype=np.uint64))
       # tick.tick('computing pulse counts')
       # tick.tick('estimating pulse delta')
       pulseDeltaErrors = searchingPulseCountDip(pulseCounts, randomNumbers)
