@@ -38,3 +38,6 @@ metals.sbt
 .scalafmt.conf
 
 publish
+
+# Local TFQKD simulations, exploratory programs and generated results
+/InteractionFreeLabLocal/Experiment/TFQKD/dataparse/keyrate/simulation/

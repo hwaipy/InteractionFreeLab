@@ -943,4 +943,4 @@ if __name__ == "__main__":
     sim.play()
 
     # sim.disable_compensation()
-    sim.compensate(rho=2)
+    # sim.compensate(rho=2)
