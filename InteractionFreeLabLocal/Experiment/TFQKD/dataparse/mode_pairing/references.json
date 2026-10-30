@@ -1,0 +1,10 @@
+{
+  "accessed": "2026-10-30",
+  "references": [
+    {"id": "theory2022", "doi": "10.1038/s41467-022-31534-7", "read_version": "https://arxiv.org/pdf/2201.04300", "implementation": "v2 Appendix D1-D15; journal main text Eq 4-7", "curve_data_available": false},
+    {"id": "prl2023", "doi": "10.1103/PhysRevLett.130.030801", "read_version": "https://arxiv.org/pdf/2208.05649", "tables": ["VI", "VII"], "implemented_validation": "pair-rate B7 and published-bound replay"},
+    {"id": "field2024", "doi": "10.1364/OPTICA.520697", "read_version": "https://arxiv.org/pdf/2403.09339", "tables": ["I", "V", "VI"], "implemented_validation": "raw-count LP diagnostic and published-bound replay", "status": "X bound unresolved"},
+    {"id": "prx2025", "doi": "10.1103/PhysRevX.15.021037", "read_version": "https://journals.aps.org/prx/pdf/10.1103/PhysRevX.15.021037", "tables": ["I", "III"], "implemented_validation": "202/403 km raw-count LP plus Chernoff and sampling", "transcription_issue": {"distance_km": 101, "field": "X(2mu,0)", "extracted_text": "14 554 3908", "action": "preserve literal digits; exclude this point from validation"}, "vacuum_x_errors": "not listed in Table III; expected random-bit half-count convention used explicitly"},
+    {"id": "asynchronous2023", "doi": "10.1103/PhysRevLett.130.250801", "read_version": "https://doi.org/10.1103/PhysRevLett.130.250801", "status": "identified, not implemented"}
+  ]
+}
