@@ -274,6 +274,17 @@ def prepareAnalysers(workerRN, channelCount):
       'Y': [i for i in range(64) if i % 4 == 2],
       'Z': [i for i in range(64) if i % 4 == 3],
   }})
+  analysers['TFQKDEncoding3'] = LongRandomNumberEncodingAnalyser(workerRN, channelCount, 256)
+  analysers['TFQKDEncoding3'].turnOn({'Period': 5000, 'TriggerChannel': 0, 'SignalChannel': 6, 'RandomNumbers': [0], 'PulsePerTrigger': 100000000,
+  'Histograms': {
+      'All Pulses': [i for i in range(128)],
+      'All Signals': [i for i in range(64)],
+      'All Ref': [64, 128],
+      'Vacuum': [i for i in range(64) if i % 4 == 0],
+      'X': [i for i in range(64) if i % 4 == 1],
+      'Y': [i for i in range(64) if i % 4 == 2],
+      'Z': [i for i in range(64) if i % 4 == 3],
+  }})
   analysers['TFQKDSyncAlice'] = SyncAnalyser(channelCount, 256)
   analysers['TFQKDSyncBob'] = SyncAnalyser(channelCount, 256)
   analysers['TFQKDSyncAlice'].turnOn({'Period': 5000, 'TriggerChannel': 0, 'SignalChannel': 4, 'RandomNumbers': [0], 'PulsePosition': 2500, 'Histograms': {'Sync Alice': [i for i in range(128)]}})
@@ -569,7 +580,7 @@ if __name__ == '__main__':
   workerRTT = IFWorker(ifserver, serviceNameRTT, rt, force=True)
   print('worker started')
 
-  for name in ['Counter', 'MultiHistogram', 'TFQKDEncoding', 'TFQKDEncoding2', 'ChannelMonitor', 'QKDQBER', 'TFQKDSyncAliceMonitor', 'TFQKDSyncBobMonitor', 'TempStore']:
+  for name in ['Counter', 'MultiHistogram', 'TFQKDEncoding', 'TFQKDEncoding2', 'TFQKDEncoding3', 'ChannelMonitor', 'QKDQBER', 'TFQKDSyncAliceMonitor', 'TFQKDSyncBobMonitor', 'TempStore']:
     server.installAnalyser(name, analysers[name])
   for name in ['TFQKDSyncAlice', 'TFQKDSyncBob']:
     server.installAnalyser(name, analysers[name], fastMode=True)

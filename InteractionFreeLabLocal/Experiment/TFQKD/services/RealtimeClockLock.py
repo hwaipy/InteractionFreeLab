@@ -34,7 +34,7 @@ def logEvent(stream, event, **fields):
 
 def run(tdcEndpoint, outputEndpoint, interval=0.1, serviceName='RealTimeTDC',
         timeout=2.0, maxAge=1.0, period=10000, logFile=None,
-        ddsServiceName='DDSClock', clockSkewTolerance=0.2):
+        ddsServiceName='DDSClock', clockSkewTolerance=0.2, direction=1):
   """读取最新值 → 外发 → 等待 interval 秒，逐事件记录本机时间。"""
   if any(not math.isfinite(v) or v <= 0 for v in (interval, timeout, maxAge)):
     raise ValueError('interval、timeout、maxAge 必须为正的有限秒数')
@@ -42,6 +42,8 @@ def run(tdcEndpoint, outputEndpoint, interval=0.1, serviceName='RealTimeTDC',
     raise ValueError('period 必须为正的有限数，单位 ps')
   if not math.isfinite(clockSkewTolerance) or clockSkewTolerance < 0:
     raise ValueError('clockSkewTolerance 必须为非负的有限秒数')
+  if isinstance(direction, bool) or direction not in (-1, 1):
+    raise ValueError('direction 必须为 +1 或 -1')
   if logFile is None:
     logFile = Path.cwd() / 'logs' / f'RealtimeClockLock_{datetime.now():%Y%m%d_%H%M%S_%f}.log'
   logFile = Path(logFile).resolve()
@@ -52,7 +54,7 @@ def run(tdcEndpoint, outputEndpoint, interval=0.1, serviceName='RealTimeTDC',
              ServiceName=serviceName, IntervalS=interval, TimeoutS=timeout,
              MaxAgeS=maxAge, PeriodPs=period, LogFile=str(logFile),
              ControlTarget='Bob', DDSServiceName=ddsServiceName,
-             DDSTimeoutS=None, ClockSkewToleranceS=clockSkewTolerance)
+             DDSTimeoutS=None, ClockSkewToleranceS=clockSkewTolerance, Direction=direction)
     inputWorker = outputWorker = None
     lastSample = None
     cycle = 0
@@ -73,7 +75,7 @@ def run(tdcEndpoint, outputEndpoint, interval=0.1, serviceName='RealTimeTDC',
       outputWorker = IFWorker(outputEndpoint, timeout=None)
       realtimeTDC = inputWorker.blockingInvoker(serviceName, timeout=timeout)
       logEvent(log, 'workers_connected')
-      print(f'[启动] 开始读取 delay，每轮结束后等待 {interval} s，周期={period} ps', flush=True)
+      print(f'[启动] 开始读取 delay，每轮结束后等待 {interval} s，周期={period} ps，方向={direction:+d}', flush=True)
       while True:
         cycle += 1
         stage = 'fetch'
@@ -98,28 +100,29 @@ def run(tdcEndpoint, outputEndpoint, interval=0.1, serviceName='RealTimeTDC',
                               OfferTime=sample['OfferTime'], ProcessingTime=sample.get('ProcessingTime'),
                               RawDelaysPs=delays, AgeMs=age * 1000, PeriodPs=period,
                               SyncStatistics=sample.get('SyncStatistics'),
-                              ControlTarget='Bob', DDSServiceName=ddsServiceName)
+                              ControlTarget='Bob', DDSServiceName=ddsServiceName, Direction=direction)
             if sampleID != lastSample and fresh and valid:
               wrapped = [None if d is None or not math.isfinite(d) else
                          (d + period / 2) % period - period / 2 for d in delays]
+              commandDelay = direction * wrapped[1]
               # 外发超时时结果可能已生效，避免对同一块自动重复外发。
               lastSample = sampleID
               stage = 'send'
               logEvent(log, 'send_begin', Cycle=cycle, DelaysPs=wrapped,
-                       CommandDelayPs=wrapped[1], **sampleInfo)
+                       CommandDelayPs=commandDelay, **sampleInfo)
               if not sendAnnounced:
-                print(f'[外发] {ddsServiceName}.correctDelay({wrapped[1]})，Bob，'
+                print(f'[外发] {ddsServiceName}.correctDelay({commandDelay})，Bob，'
                       f'Sequence={sample["Sequence"]}，等待补偿完成…', flush=True)
                 sendAnnounced = True
               sendBeginNs, sendBeginMono = time.time_ns(), time.perf_counter_ns()
               try:
-                result = sendDelay(outputWorker, wrapped[1], ddsServiceName)
+                result = sendDelay(outputWorker, commandDelay, ddsServiceName)
               except Exception as exc:
                 sendEndNs, sendEndMono = time.time_ns(), time.perf_counter_ns()
                 logEvent(log, 'send_result', Cycle=cycle, CallReturned=False,
                          BeginUnixTimeNs=sendBeginNs, EndUnixTimeNs=sendEndNs,
                          DurationMs=(sendEndMono - sendBeginMono) / 1e6,
-                         Error=repr(exc), DelaysPs=wrapped, CommandDelayPs=wrapped[1], **sampleInfo)
+                         Error=repr(exc), DelaysPs=wrapped, CommandDelayPs=commandDelay, **sampleInfo)
                 raise
               sendEndNs, sendEndMono = time.time_ns(), time.perf_counter_ns()
               logEvent(log, 'send_result', Cycle=cycle, CallReturned=True,
@@ -128,9 +131,9 @@ def run(tdcEndpoint, outputEndpoint, interval=0.1, serviceName='RealTimeTDC',
                        FetchToReturnMs=None if sample.get('FetchTime') is None else
                            (sendEndNs / 1e9 - sample['FetchTime']) * 1000,
                        OfferToReturnMs=(sendEndNs / 1e9 - sample['OfferTime']) * 1000,
-                       Result=result, DelaysPs=wrapped, CommandDelayPs=wrapped[1], **sampleInfo)
+                       Result=result, DelaysPs=wrapped, CommandDelayPs=commandDelay, **sampleInfo)
               showStatus(f'第 {cycle} 轮，Sequence={sample["Sequence"]}，delay={wrapped} ps，'
-                         f'Bob DDS 补偿成功，尝试 {result.get("Attempts", "?")} 次，'
+                         f'外发补偿={commandDelay} ps，方向={direction:+d}，DDS 返回成功，'
                          f'耗时 {(sendEndMono - sendBeginMono) / 1e6:.2f} ms')
             else:
               reason = 'duplicate' if sampleID == lastSample else ('invalid' if not valid else 'stale')
@@ -193,6 +196,8 @@ def main(argv=None):
                       help='外发控制所使用的 Broker 地址')
   parser.add_argument('--service-name', default='RealTimeTDC', help='实时 TDC 服务名')
   parser.add_argument('--dds-service-name', default='DDSClock', help='控制 Bob 时钟的 DDS 服务名')
+  parser.add_argument('--direction', type=int, choices=(-1, 1), default=1,
+                      help='补偿方向：+1 原样外发 Bob delay，-1 反向外发')
   parser.add_argument('--interval', type=positiveNumber, default=0.1,
                       help='每轮处理完成后的等待时间，单位 s')
   parser.add_argument('--timeout', type=positiveNumber, default=2.0,
@@ -208,7 +213,8 @@ def main(argv=None):
   run(tdcEndpoint=args.tdc_endpoint, outputEndpoint=args.output_endpoint,
       interval=args.interval, serviceName=args.service_name, timeout=args.timeout,
       maxAge=args.max_age, period=args.period, logFile=args.log_file,
-      ddsServiceName=args.dds_service_name, clockSkewTolerance=args.clock_skew_tolerance)
+      ddsServiceName=args.dds_service_name, clockSkewTolerance=args.clock_skew_tolerance,
+      direction=args.direction)
 
 
 if __name__ == '__main__':
@@ -226,12 +232,13 @@ if __name__ == '__main__':
 # $outputEndpoint = "tcp://tf.qpqi.group:1161"
 # $serviceName = "RealTimeTDC"
 # $ddsServiceName = "DDSClock"
+# $direction = 1
 # $interval = 0.1
 # $timeout = 2
 # $maxAge = 1
 # $period = 10000
 # $clockSkewTolerance = 0.2
 # $logFile = Join-Path (Get-Location) ("logs\RealtimeClockLock_" + (Get-Date -Format "yyyyMMdd_HHmmss_ffffff") + ".log")
-# & $pythondir $scriptpath --tdc-endpoint $tdcEndpoint --output-endpoint $outputEndpoint --service-name $serviceName --dds-service-name $ddsServiceName --interval $interval --timeout $timeout --max-age $maxAge --period $period --clock-skew-tolerance $clockSkewTolerance --log-file $logFile
+# & $pythondir $scriptpath --tdc-endpoint $tdcEndpoint --output-endpoint $outputEndpoint --service-name $serviceName --dds-service-name $ddsServiceName --direction $direction --interval $interval --timeout $timeout --max-age $maxAge --period $period --clock-skew-tolerance $clockSkewTolerance --log-file $logFile
 #
 # pause

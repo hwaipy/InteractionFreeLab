@@ -939,8 +939,8 @@ if __name__ == "__main__":
 
     sim = AttSimClient()
 
-    # sim.fixed(0.163)
-    sim.play()
+    sim.fixed(0.16)
+    # sim.play()
 
-    # sim.disable_compensation()
+    sim.disable_compensation()
     # sim.compensate(rho=2)

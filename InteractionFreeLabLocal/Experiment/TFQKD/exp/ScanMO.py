@@ -115,11 +115,10 @@ def scanMO(target='Alice', offsets=(-20, -10, 0, 10, 20), interval=30,
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('target', choices=['Alice', 'Bob'])
-    parser.add_argument('--offsets', type=int, nargs='+', default=[-40, -20, 0, 20, 40])
-    parser.add_argument('--interval', type=float, default=30, help='Seconds between delay measurements')
-    parser.add_argument('--settle', type=float, default=2, help='Seconds to settle after each MO change')
-    parser.add_argument('--collection', default='TFQKD_TDC')
-    args = parser.parse_args()
-    scanMO(args.target, args.offsets, args.interval, args.settle, args.collection)
+    scanMO(
+        target='Bob', 
+        offsets=[-40, -20, 0, 20, 40],
+        interval=30,
+        settle=2,
+        collection='TFQKD_TDC'
+    )

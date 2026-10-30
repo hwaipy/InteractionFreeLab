@@ -338,9 +338,9 @@ if __name__ == '__main__':
     target = 'Bob'
     mo = MoMethod.getMO(target=target)  # 获取MO值
     print(mo)
-    MoMethod.setMO(MO=2898, target=target)
+    MoMethod.setMO(MO=2899, target=target)
 
     # data = worker.RealTimeTDC.getRecent(count=20, reversed=True, delayOnly=True)  # (count: Int, reversed: Boolean = False数据由老到新 True数据由新到老)
     # print(data)
 
-    MoMethod.set_MOsync(2898, target=target)
+    MoMethod.set_MOsync(2899, target=target)

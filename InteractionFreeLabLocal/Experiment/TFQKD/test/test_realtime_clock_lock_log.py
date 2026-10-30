@@ -132,6 +132,25 @@ class RealtimeClockLockLogTest(unittest.TestCase):
       self.assertEqual(sent['DelaysPs'], [None, -100])
       self.assertEqual(sent['CommandDelayPs'], -100)
 
+  def test_direction_and_wait_interval(self):
+    source, output = MagicMock(), MagicMock()
+    source.blockingInvoker.return_value.getRecent.return_value = [self.sample(delays=[None, 10123])]
+    with tempfile.TemporaryDirectory() as root:
+      path = Path(root) / 'run.log'
+      with patch.object(lock, 'IFWorker', side_effect=[source, output]), \
+           patch.object(lock, 'sendDelay', return_value={'State': 'Success'}) as send, \
+           patch.object(lock.time, 'sleep', side_effect=KeyboardInterrupt) as sleep:
+        lock.run('tdc', 'output', interval=.35, direction=-1, logFile=path)
+      send.assert_called_once_with(output, -123, 'DDSClock')
+      sleep.assert_called_once_with(.35)
+      records = [json.loads(line) for line in path.read_text().splitlines()]
+      sent = next(r for r in records if r['Event'] == 'send_result')
+      self.assertEqual(sent['DelaysPs'], [None, 123])
+      self.assertEqual(sent['CommandDelayPs'], -123)
+      self.assertEqual(sent['Direction'], -1)
+      events = [r['Event'] for r in records]
+      self.assertLess(events.index('send_result'), events.index('wait_begin'))
+
   def test_small_clock_skew_allowed_and_large_skew_rejected(self):
     source, output = MagicMock(), MagicMock()
     source.blockingInvoker.return_value.getRecent.side_effect = [

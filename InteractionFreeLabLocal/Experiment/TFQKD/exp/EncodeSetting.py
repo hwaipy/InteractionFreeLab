@@ -181,6 +181,6 @@ def runBobWithCourseDelayFix():
 
 if __name__ == '__main__':
     # runAlice()
-    runAliceWithCourseDelayFix()
+    # runAliceWithCourseDelayFix()
     # runBob()
     runBobWithCourseDelayFix()
