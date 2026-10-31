@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Upload and trigger a one-second MEMS voltage waveform on Gen1 or Gen2.
+"""Upload and trigger MEMS voltage waveforms on Gen1 or Gen2.
 
 Python API::
 
@@ -17,7 +17,6 @@ import json
 import math
 import re
 import socket
-import struct
 import sys
 import time
 import warnings
@@ -29,11 +28,13 @@ from threading import RLock
 GEN1_IP = "192.168.25.56"
 GEN2_IP = "192.168.25.55"
 GEN2_PORT = 5025
+GEN2_MAX_SAMPLES = 4_000_000
 VOLTAGE_MIN = 0.0
 VOLTAGE_MAX = 5.0
 STEP_SECONDS = 100e-6
 STEP_COUNT = round(1.0 / STEP_SECONDS)
-GEN2_SAMPLES_PER_STEP = 100
+GEN2_SAMPLES_PER_STEP = 25
+GEN2_SAMPLE_RATE = round(GEN2_SAMPLES_PER_STEP / STEP_SECONDS)
 DEVICE_ENDPOINT = "tcp://192.168.25.5:1061"
 DEVICE_SERVICE = "AttSim"
 MAPPING_PATH = Path(__file__).with_name("AttControlMapping.json")
@@ -124,6 +125,57 @@ def prepare_attenuation_waveform(generator, channel, attenuations_db):
         "voltage_min_V": min(voltages), "voltage_max_V": max(voltages),
         "calibration_sha256": _calibration()[1],
     }
+
+
+def prepare_gen2_single_shot_attenuation_waveform(channel, attenuations_db):
+    """Convert an unpadded Gen2 attenuation sequence for one finite burst."""
+    key = _channel_key("gen2", channel)
+    model = _calibration()[0][key]
+    maximum = model["attenuation_range_db"][1]
+    try:
+        values = list(attenuations_db)
+    except TypeError as exc:
+        raise ValueError("attenuations_db must be a non-empty sequence") from exc
+    if not values or isinstance(attenuations_db, (str, bytes)):
+        raise ValueError("attenuations_db must be a non-empty sequence")
+
+    converted = []
+    for index, value in enumerate(values):
+        try:
+            number = float(value)
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise ValueError(f"{key}: attenuation[{index}] is not a finite number") from exc
+        if isinstance(value, bool) or not math.isfinite(number) or not 0 <= number <= maximum:
+            raise ValueError(f"{key}: attenuation[{index}]={value!r} outside calibrated range [0, {maximum:.12g}] dB")
+        converted.append(number)
+
+    voltages = [_voltage_from_attenuation(key, value) for value in converted]
+    sample_count = len(voltages) * GEN2_SAMPLES_PER_STEP
+    if sample_count > GEN2_MAX_SAMPLES:
+        maximum_steps = GEN2_MAX_SAMPLES // GEN2_SAMPLES_PER_STEP
+        raise ValueError(
+            f"Gen2 CH{channel}: waveform needs {sample_count} DAC samples, "
+            f"exceeding the 4 MSa/channel limit ({maximum_steps} steps at 100 us)"
+        )
+    return voltages, {
+        "generator": "gen2", "channel": int(channel), "input_steps": len(converted),
+        "dac_samples": sample_count, "duration_seconds": len(converted) * STEP_SECONDS,
+        "attenuation_min_db": min(converted), "attenuation_max_db": max(converted),
+        "voltage_min_V": min(voltages), "voltage_max_V": max(voltages),
+        "calibration_sha256": _calibration()[1],
+    }
+
+
+def _decode_float32_little_endian(values):
+    from array import array
+
+    if not isinstance(values, (bytes, bytearray, memoryview)) or len(values) % 4:
+        raise ValueError("packed attenuation data must contain little-endian float32 values")
+    decoded = array("f")
+    decoded.frombytes(values)
+    if sys.byteorder != "little":
+        decoded.byteswap()
+    return decoded
 
 
 def prepare_waveform(voltages):
@@ -218,13 +270,23 @@ def _set_gen1(channel, voltages):
             manager.close()
 
 
-def _set_gen2(channel, voltages):
+def _set_gen2(channel, voltages, repeat=True, arm=True):
+    from array import array
+
+    sample_count = len(voltages) * GEN2_SAMPLES_PER_STEP
+    if sample_count > GEN2_MAX_SAMPLES:
+        raise ValueError(
+            f"Gen2 CH{channel}: waveform needs {sample_count} DAC samples, "
+            f"exceeding the 4 MSa/channel limit"
+        )
     normalized, vpp, offset = _normalized_waveform(voltages)
-    samples = []
+    samples = array("h")
     for value in normalized:
         encoded = max(-32768, min(32767, round(value * 32767)))
-        samples.extend([encoded] * GEN2_SAMPLES_PER_STEP)
-    data = struct.pack(f">{len(samples)}h", *samples)
+        samples.extend(array("h", [encoded]) * GEN2_SAMPLES_PER_STEP)
+    if sys.byteorder == "little":
+        samples.byteswap()
+    data = samples.tobytes()
     source = f"SOURCE{channel}"
     name = f"MEMS{channel}"
 
@@ -254,20 +316,26 @@ def _set_gen2(channel, voltages):
         for command in (
             f"{source}:FUNCTION ARB",
             f"{source}:FUNCTION:ARB {name}",
-            f"{source}:FUNC:ARB:SRATE 1000000",
+            f"{source}:FUNC:ARB:SRATE {GEN2_SAMPLE_RATE}",
             f"{source}:VOLTAGE {vpp:.9g}",
             f"{source}:VOLTAGE:OFFSET {offset:.9g}",
             f"{source}:BURST:STATE ON",
             f"{source}:BURST:MODE TRIGGERED",
-            f"{source}:BURST:NCYCLES INFINITY",
-            f"TRIGGER{channel}:SOURCE EXT",
-            f"OUTPUT{channel} ON",
+            f"{source}:BURST:NCYCLES {'INFINITY' if repeat else '1'}",
+            f"TRIGGER{channel}:SOURCE {'EXT' if arm else 'BUS'}",
         ):
             write(command)
             time.sleep(0.1)
         error = query("SYSTEM:ERROR?")
         if not error.startswith(("+0", "0")):
             raise IOError(f"Gen2 CH{channel} reported instrument error: {error}")
+        if not arm:
+            return
+        write(f"OUTPUT{channel} ON")
+        time.sleep(0.1)
+        error = query("SYSTEM:ERROR?")
+        if not error.startswith(("+0", "0")):
+            raise IOError(f"Gen2 CH{channel} failed to enable output: {error}")
 
 
 def set_waveform(generator, channel, voltages):
@@ -295,6 +363,25 @@ def set_waveform(generator, channel, voltages):
         f"{generator} CH{channel}: configured {STEP_COUNT} steps "
         "(100 us/step, 1 s), external trigger, continuous repeat"
     )
+    return waveform
+
+
+def set_gen2_single_shot_waveform(channel, voltages):
+    """Configure a finite Gen2 waveform played once on each external trigger."""
+    if channel not in (1, 2):
+        raise ValueError("channel must be 1 or 2")
+    try:
+        waveform = [float(value) for value in voltages]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("voltages must be a non-empty iterable of numbers") from exc
+    if not waveform or not all(math.isfinite(value) for value in waveform):
+        raise ValueError("voltages must be a non-empty sequence of finite numbers")
+    if any(value < VOLTAGE_MIN or value > VOLTAGE_MAX for value in waveform):
+        raise ValueError("voltages must be between 0 V and 5 V")
+    sample_count = len(waveform) * GEN2_SAMPLES_PER_STEP
+    if sample_count > GEN2_MAX_SAMPLES:
+        raise ValueError(f"Gen2 CH{channel}: waveform needs {sample_count} DAC samples, exceeding the 4 MSa/channel limit")
+    _set_gen2(channel, waveform, repeat=False)
     return waveform
 
 
@@ -333,6 +420,66 @@ class AttControlService:
             waveform, metadata = prepare_attenuation_waveform(generator, channel, attenuations_db)
             result = self.setWaveform(generator, channel, waveform)
             return dict(result, **{key: value for key, value in metadata.items() if key not in result})
+
+    def previewAttenuationWaveformOnce(self, generator, channel, attenuations_db):
+        if str(generator).strip().lower() not in ("gen2", "2"):
+            raise ValueError("single-shot attenuation waveforms are supported only on Gen2")
+        waveform, metadata = prepare_gen2_single_shot_attenuation_waveform(channel, attenuations_db)
+        return dict(metadata, voltages=waveform, steps=len(waveform),
+                    step_seconds=STEP_SECONDS, sample_rate_hz=GEN2_SAMPLE_RATE,
+                    trigger="external", repeat="once")
+
+    def setAttenuationWaveformOnce(self, generator, channel, attenuations_db):
+        if str(generator).strip().lower() not in ("gen2", "2"):
+            raise ValueError("single-shot attenuation waveforms are supported only on Gen2")
+        with self._lock:
+            waveform, metadata = prepare_gen2_single_shot_attenuation_waveform(channel, attenuations_db)
+            set_gen2_single_shot_waveform(channel, waveform)
+        return dict(metadata, step_seconds=STEP_SECONDS, sample_rate_hz=GEN2_SAMPLE_RATE,
+                    trigger="external", repeat="once")
+
+    def previewAttenuationWaveformOncePacked(self, generator, channel, attenuations_db_f32):
+        if str(generator).strip().lower() not in ("gen2", "2"):
+            raise ValueError("single-shot attenuation waveforms are supported only on Gen2")
+        values = _decode_float32_little_endian(attenuations_db_f32)
+        _, metadata = prepare_gen2_single_shot_attenuation_waveform(channel, values)
+        return dict(metadata, step_seconds=STEP_SECONDS, sample_rate_hz=GEN2_SAMPLE_RATE,
+                    trigger="external", repeat="once")
+
+    def setAttenuationWaveformOncePacked(self, generator, channel, attenuations_db_f32):
+        if str(generator).strip().lower() not in ("gen2", "2"):
+            raise ValueError("single-shot attenuation waveforms are supported only on Gen2")
+        values = _decode_float32_little_endian(attenuations_db_f32)
+        with self._lock:
+            waveform, metadata = prepare_gen2_single_shot_attenuation_waveform(channel, values)
+            set_gen2_single_shot_waveform(channel, waveform)
+        return dict(metadata, step_seconds=STEP_SECONDS, sample_rate_hz=GEN2_SAMPLE_RATE,
+                    trigger="external", repeat="once")
+
+    def setGen2SequencePairPacked(self, channel1_db_f32, channel2_db_f32):
+        with self._lock:
+            prepared = [prepare_gen2_single_shot_attenuation_waveform(
+                channel, _decode_float32_little_endian(payload))
+                for channel, payload in ((1, channel1_db_f32), (2, channel2_db_f32))]
+            if len(prepared[0][0]) != len(prepared[1][0]):
+                raise ValueError("Gen2 paired sequences must have equal lengths")
+            for channel, (waveform, _) in enumerate(prepared, 1):
+                _set_gen2(channel, waveform, repeat=False, arm=False)
+            with socket.create_connection((GEN2_IP, GEN2_PORT), timeout=10) as instrument:
+                instrument.settimeout(30)
+                instrument.sendall(b"OUTPUT1 ON\nOUTPUT2 ON\nTRIGGER1:SOURCE EXT\nTRIGGER2:SOURCE EXT\nSYSTEM:ERROR?\n")
+                response = bytearray()
+                while not response.endswith(b"\n"):
+                    chunk = instrument.recv(4096)
+                    if not chunk:
+                        raise IOError("Gen2 closed the connection while arming paired sequences")
+                    response.extend(chunk)
+                error = response.decode("ascii").strip()
+                if not error.startswith(("+0", "0")):
+                    raise IOError(f"Gen2 paired sequence arming failed: {error}")
+            return {f"gen2_ch{channel}": dict(metadata, step_seconds=STEP_SECONDS,
+                    sample_rate_hz=GEN2_SAMPLE_RATE, trigger="external", repeat="once")
+                    for channel, (_, metadata) in enumerate(prepared, 1)}
 
     def setWaveform(self, generator, channel, voltages):
         with self._lock:

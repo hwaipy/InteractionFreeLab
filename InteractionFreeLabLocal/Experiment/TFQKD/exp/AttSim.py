@@ -25,6 +25,11 @@ Historical counts replay (Alice = Gen1 CH1, Bob = Gen1 CH2):
     result, figure = validate_counts_waveforms(show=True)
     load_counts_waveforms()
 
+Load the Gen2 rho sweep with one call (changes Gen2 hardware only):
+
+    from AttSim import load_gen2_rho_sequence
+    result = load_gen2_rho_sequence()
+
 Validation restores both channels; the final load call leaves both waveforms
 armed/running. The source, converted JSON and this module must be available in
 the Python environment used by VS Code Remote SSH; copying is not automatic.
@@ -576,6 +581,77 @@ def generate_compensation_waveforms(rho, data_path=None):
     }
 
 
+def generate_complex_compensation_sequence(
+    rho_values=None,
+    data_path=None,
+    section_seconds=1.0,
+    no_compensation_seconds=0.5,
+):
+    """Build a 14 s Gen2 sweep plus a 0.5 s 0 dB plateau, without hardware I/O.
+
+    Each rho uses its own one-second Strategy 2 waveform, repeated for the
+    requested section duration. The final section requests zero added
+    attenuation. The default is 14 geometrically spaced rho values from 1 to
+    7, one second each, followed by 0.5 s without compensation. The finite
+    burst then holds its configured idle level until the next trigger.
+    """
+    import numpy as np
+
+    if rho_values is None:
+        rho_values = [7 ** (index / 13) for index in range(14)]
+    rho_values = list(rho_values)
+    if not rho_values or any(
+        isinstance(value, bool) or not math.isfinite(float(value)) or float(value) < 1
+        for value in rho_values
+    ):
+        raise ValueError("rho_values must be a non-empty sequence of finite values >= 1")
+    rho_values = [float(value) for value in rho_values]
+    for name, duration in (("section_seconds", section_seconds),
+                           ("no_compensation_seconds", no_compensation_seconds)):
+        if isinstance(duration, bool) or not math.isfinite(duration) or duration <= 0:
+            raise ValueError(f"{name} must be finite and positive")
+        steps = duration / 100e-6
+        if not math.isclose(steps, round(steps), rel_tol=0, abs_tol=1e-7):
+            raise ValueError(f"{name} must be an integer multiple of 100 us")
+
+    section_steps = round(section_seconds / 100e-6)
+    tail_steps = round(no_compensation_seconds / 100e-6)
+    repetitions = section_steps // 10000
+    if repetitions * 10000 != section_steps:
+        raise ValueError("section_seconds must be an integer number of seconds")
+
+    channel_segments = {"Alice": [], "Bob": []}
+    source_data = None
+    for rho in rho_values:
+        result = generate_compensation_waveforms(rho, data_path)
+        source_data = result
+        for name in channel_segments:
+            attenuation = np.asarray(result["channels"][name]["attenuation_db"], dtype=float)
+            if attenuation.shape != (10000,) or not np.all(np.isfinite(attenuation)):
+                raise ValueError(f"Invalid one-second compensation waveform for {name}")
+            channel_segments[name].append(np.tile(attenuation, repetitions))
+
+    total_seconds = len(rho_values) * section_seconds + no_compensation_seconds
+    return {
+        "rho_values": rho_values,
+        "section_seconds": float(section_seconds),
+        "no_compensation_seconds": float(no_compensation_seconds),
+        "step_seconds": 100e-6,
+        "duration_seconds": total_seconds,
+        "steps": round(total_seconds / 100e-6),
+        "data_path": source_data["source_path"],
+        "source_sha256": source_data["source_sha256"],
+        "channels": {
+            name: {
+                "generator": "gen2",
+                "channel": channel,
+                "attenuation_db": np.concatenate(
+                    channel_segments[name] + [np.zeros(tail_steps, dtype=float)]
+                ),
+            }
+            for name, channel in (("Alice", 1), ("Bob", 2))
+        },
+    }
 def plot_compensation_waveforms(result, show=True):
     """Plot in-memory compensation, without saving files or accessing devices."""
     import matplotlib.pyplot as plt
@@ -881,9 +957,103 @@ class AttSimClient:
         return {"rho": result["rho"], "source_sha256": result["source_sha256"],
                 "responses": self._apply(commands)}
 
+    def load_gen2_rho_sequence(self, rho_values=None, section_seconds=1.0,
+                               no_compensation_seconds=0.5):
+        """Load only Gen2's finite rho sweep; leave both Gen1 channels untouched."""
+        remote = self._remote()
+        sequence = generate_complex_compensation_sequence(
+            rho_values=rho_values,
+            data_path=self.data_path,
+            section_seconds=section_seconds,
+            no_compensation_seconds=no_compensation_seconds,
+        )
+        gen2_commands = [
+            ("gen2", entry["channel"], entry["attenuation_db"].tolist())
+            for entry in sequence["channels"].values()
+        ]
+        for generator, channel, attenuation in gen2_commands:
+            remote.previewAttenuationWaveformOnce(generator, channel, attenuation)
+
+        responses = []
+        completed = []
+        for generator, channel, attenuation in gen2_commands:
+            try:
+                responses.append(remote.setAttenuationWaveformOnce(generator, channel, attenuation))
+            except Exception as error:
+                raise RuntimeError(
+                    f"Write failed for {generator} CH{channel}; completed: {completed}. "
+                    "Hardware may be partially configured."
+                ) from error
+            completed.append(f"{generator} CH{channel}")
+        return {
+            "rho_values": sequence["rho_values"],
+            "section_seconds": sequence["section_seconds"],
+            "no_compensation_seconds": sequence["no_compensation_seconds"],
+            "gen2_duration_seconds": sequence["duration_seconds"],
+            "gen2_steps": sequence["steps"],
+            "gen2_dac_samples_per_channel": sequence["steps"] * 25,
+            "gen2_repeat": "once per external trigger",
+            "next_trigger_spacing_seconds": 15.0,
+            "source_sha256": sequence["source_sha256"],
+            "responses": {f"gen2_ch{channel}": response
+                           for (_, channel, _), response in zip(gen2_commands, responses)},
+        }
+
+    def compensateSequence(self, rho_values=None, section_seconds=1.0,
+                           no_compensation_seconds=0.5):
+        """Load a finite 14 s Gen2 sweep and hold 0 dB until the next trigger."""
+        import numpy as np
+
+        remote = self._remote()
+        sequence = generate_complex_compensation_sequence(
+            rho_values=rho_values,
+            data_path=self.data_path,
+            section_seconds=section_seconds,
+            no_compensation_seconds=no_compensation_seconds,
+        )
+        commands = [
+            (entry["channel"], np.asarray(entry["attenuation_db"], dtype="<f4").tobytes())
+            for entry in sequence["channels"].values()
+        ]
+        for channel, attenuation in commands:
+            remote.previewAttenuationWaveformOncePacked("gen2", channel, attenuation)
+
+        try:
+            responses = remote.setGen2SequencePairPacked(commands[0][1], commands[1][1])
+        except Exception as error:
+            raise RuntimeError("Gen2 paired sequence configuration failed; hardware state is uncertain.") from error
+        trigger_spacing = float(math.floor(sequence["duration_seconds"]) + 1)
+        return {
+            "rho_values": sequence["rho_values"],
+            "section_seconds": sequence["section_seconds"],
+            "no_compensation_seconds": sequence["no_compensation_seconds"],
+            "waveform_duration_seconds": sequence["duration_seconds"],
+            "nominal_trigger_spacing_seconds": trigger_spacing,
+            "dc_hold_seconds_before_next_trigger": trigger_spacing - sequence["duration_seconds"],
+            "steps": sequence["steps"],
+            "dac_samples_per_channel": sequence["steps"] * 25,
+            "trigger": "external; each trigger starts one finite burst",
+            "repeat": "once per trigger; waveform ends with a 0 dB plateau and waits for the next trigger",
+            "source_sha256": sequence["source_sha256"],
+            "responses": responses,
+        }
+
     def disable_compensation(self):
         """Set both Gen2 channels to calibrated 0 dB; Gen1 unchanged."""
         return self._apply([("gen2", 1, [0.0]), ("gen2", 2, [0.0])])
+
+
+def load_gen2_rho_sequence(data_path=None, control_endpoint=CONTROL_ENDPOINT,
+                           control_service=CONTROL_SERVICE, worker=None,
+                           rho_values=None, section_seconds=1.0,
+                           no_compensation_seconds=0.5):
+    """One-call convenience wrapper; only Gen2 outputs are changed."""
+    client = AttSimClient(data_path, control_endpoint, control_service, worker)
+    return client.load_gen2_rho_sequence(
+        rho_values=rho_values,
+        section_seconds=section_seconds,
+        no_compensation_seconds=no_compensation_seconds,
+    )
 
 
 def main(argv=None):
@@ -939,8 +1109,9 @@ if __name__ == "__main__":
 
     sim = AttSimClient()
 
-    sim.fixed(0.16)
+    # sim.fixed(0.16)
     # sim.play()
 
-    sim.disable_compensation()
+    # sim.disable_compensation()
     # sim.compensate(rho=2)
+    sim.compensateSequence()

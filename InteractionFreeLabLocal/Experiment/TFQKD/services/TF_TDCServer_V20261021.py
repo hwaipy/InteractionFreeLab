@@ -25,6 +25,52 @@ from rich.console import Group
 from rich.text import Text
 from tdc.SyncAnalyser import SyncAnalyser
 
+
+def prepareMetadataForStorage(result):
+  """Store complete random-number sequences as uint8 bytes in this version only.
+
+  Only Configuration.RandomNumbers/AliceRandomNumbers/BobRandomNumbers change
+  representation. Every record still contains the full sequences. Strings
+  referencing externally stored sequences retain their existing meaning.
+  Copies of the affected dictionaries keep live analyser configurations and
+  realtime results unchanged. Existing binary values are already encoded.
+
+  Readers of new records should decode binary sequences with
+  np.frombuffer(value, dtype=np.uint8).astype(np.int64), or list(value).
+  Old records still contain lists; readers must accept both representations.
+  """
+  stored = dict(result)
+  randomNumberKeys = ('RandomNumbers', 'AliceRandomNumbers', 'BobRandomNumbers')
+  for name, analysis in result.items():
+    if not isinstance(analysis, dict):
+      continue
+    configuration = analysis.get('Configuration')
+    if not isinstance(configuration, dict):
+      continue
+    encoded = dict(configuration)
+    changed = False
+    for key in randomNumberKeys:
+      if key not in configuration:
+        continue
+      value = configuration[key]
+      if isinstance(value, (str, bytes)):
+        continue
+      if isinstance(value, (bytearray, memoryview)):
+        encoded[key] = bytes(value)
+      else:
+        values = np.asarray(value)
+        if values.ndim != 1:
+          raise ValueError(f'{name}.Configuration.{key} must be one-dimensional')
+        if values.size and (values.dtype.kind not in 'iu'
+                            or np.any(values < 0) or np.any(values > 255)):
+          raise ValueError(f'{name}.Configuration.{key} must contain integers in 0..255')
+        encoded[key] = values.astype(np.uint8).tobytes()
+      changed = True
+    if changed:
+      stored[name] = dict(analysis, Configuration=encoded)
+  return stored
+
+
 class RealTimeTDC:
   def __init__(self):
     self.dataBuffer = []
@@ -252,6 +298,8 @@ def prepareAnalysers(workerRN, channelCount):
   analysers['Counter'].turnOn()
   analysers['MultiHistogram'] = pytimetag.HistogramAnalyser(channelCount)
   analysers['MultiHistogram'].turnOn({'Sync': 0, 'Signals': [2, 3], 'ViewStart': 0, 'ViewStop': 40000000, 'BinCount': 1000, 'Divide': 1})
+  analysers['TDCViewer2'] = pytimetag.HistogramAnalyser(channelCount)
+  analysers['TDCViewer2'].turnOn({'Sync': 0, 'Signals': [2, 3], 'ViewStart': 0, 'ViewStop': 40000000, 'BinCount': 1000, 'Divide': 1})
   analysers['TFQKDEncoding'] = LongRandomNumberEncodingAnalyser(workerRN, channelCount, 256)
   analysers['TFQKDEncoding'].turnOn({'Period': 5000, 'TriggerChannel': 1, 'SignalChannel': 4, 'RandomNumbers': [0], 'PulsePerTrigger': 100000000,
   'Histograms': {
@@ -475,7 +523,8 @@ if __name__ == '__main__':
   def storePostProcessData(dataBlock, result):
     # delays = [result["TFQKDSyncAlice"]["Delay"], result["TFQKDSyncBob"]["Delay"]]
     # syncDelays[:] = delays
-    worker.blockingInvoker('Storage', timeout=2).append(storeCollection, result, fetchTime=dataBlock.creationTime)
+    storedResult = prepareMetadataForStorage(result)
+    worker.blockingInvoker('Storage', timeout=2).append(storeCollection, storedResult, fetchTime=dataBlock.creationTime)
         # worker.Storage.append(storeCollection, result, fetchTime=dataBlock.creationTime)
     # if 'QKDQBER' in result.keys() and result['QKDQBER'] is not None and (len(result['QKDQBER'].keys()) > 1):
     #   qberStatus['text'] = DataBlockParseResult.toString(result['QKDQBER'])
@@ -580,7 +629,7 @@ if __name__ == '__main__':
   workerRTT = IFWorker(ifserver, serviceNameRTT, rt, force=True)
   print('worker started')
 
-  for name in ['Counter', 'MultiHistogram', 'TFQKDEncoding', 'TFQKDEncoding2', 'TFQKDEncoding3', 'ChannelMonitor', 'QKDQBER', 'TFQKDSyncAliceMonitor', 'TFQKDSyncBobMonitor', 'TempStore']:
+  for name in ['Counter', 'MultiHistogram', 'TDCViewer2', 'TFQKDEncoding', 'TFQKDEncoding2', 'TFQKDEncoding3', 'ChannelMonitor', 'QKDQBER', 'TFQKDSyncAliceMonitor', 'TFQKDSyncBobMonitor', 'TempStore']:
     server.installAnalyser(name, analysers[name])
   for name in ['TFQKDSyncAlice', 'TFQKDSyncBob']:
     server.installAnalyser(name, analysers[name], fastMode=True)
