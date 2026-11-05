@@ -41,3 +41,7 @@ publish
 
 # Local TFQKD simulations, exploratory programs and generated results
 /InteractionFreeLabLocal/Experiment/TFQKD/dataparse/keyrate/simulation/
+
+# Downloaded TFQKD metadata and derived quality reports
+/InteractionFreeLabLocal/Experiment/TFQKD/exp/tdc_meta/
+/InteractionFreeLabLocal/Experiment/TFQKD/exp/attenuation_stabilizer/

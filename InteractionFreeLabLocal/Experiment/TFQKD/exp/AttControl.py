@@ -218,7 +218,7 @@ def _normalized_waveform(voltages):
     return normalized, vpp, offset
 
 
-def _set_gen1(channel, voltages):
+def _open_gen1_connection():
     try:
         from rigol_dg4062 import RigolVXI11
         connection = RigolVXI11(GEN1_IP)
@@ -232,6 +232,82 @@ def _set_gen1(channel, voltages):
             ) from exc
         manager = pyvisa.ResourceManager()
         connection = manager.open_resource(f"TCPIP0::{GEN1_IP}::INSTR")
+    if manager is not None:
+        connection.timeout = 30000
+    return connection, manager
+
+
+def _gen1_burst_configuration(connection):
+    result = {}
+    for channel in (1, 2):
+        source = f":SOURce{channel}"
+        result[f"gen1_ch{channel}"] = {
+            "frequency_hz": float(connection.query(f"{source}:FREQuency?").strip()),
+            "waveform": connection.query(f"{source}:FUNCtion?").strip(),
+            "steps": int(connection.query(f"{source}:DATA:POINts? VOLATILE").strip()),
+            "burst_enabled": connection.query(f"{source}:BURSt:STATe?").strip(),
+            "burst_mode": connection.query(f"{source}:BURSt:MODE?").strip(),
+            "cycles": int(connection.query(f"{source}:BURSt:NCYCles?").strip()),
+            "trigger_source": connection.query(f"{source}:BURSt:TRIGger:SOURce?").strip(),
+        }
+    return result
+
+
+def configure_gen1_burst_cycles(cycles=15):
+    """Change both loaded 1 s Gen1 waves to N-cycle bursts; None restores infinity.
+
+    No waveform upload, amplitude/offset changes, or Gen2 access. Intermediate
+    1PPS triggers are ignored while busy; at the end the next accepted trigger
+    restarts the waveform. The actual start spacing can be N or N+1 seconds.
+    """
+    if cycles is not None and (isinstance(cycles, bool) or not isinstance(cycles, int)
+                               or not 1 <= cycles <= 1_000_000):
+        raise ValueError("cycles must be an integer in 1..1000000, or None for infinite")
+    connection, manager = _open_gen1_connection()
+    try:
+        before = _gen1_burst_configuration(connection)
+        for key, state in before.items():
+            if (not math.isclose(state["frequency_hz"], 1.0, rel_tol=0, abs_tol=1e-9)
+                    or state["steps"] != STEP_COUNT or state["waveform"].upper() != "USER"):
+                raise ValueError(f"{key}: expected a loaded 1 s / {STEP_COUNT}-point USER wave; call play() first")
+        # Keep both channels on manual trigger while configuring; arm them in
+        # one SCPI message to minimize the gap between their trigger enables.
+        for channel in (1, 2):
+            source = f":SOURce{channel}"
+            connection.write(f"{source}:BURSt:TRIGger:SOURce MANual")
+            connection.write(f"{source}:BURSt:STATe OFF")
+        for channel in (1, 2):
+            source = f":SOURce{channel}"
+            connection.write(f"{source}:BURSt:MODE {'INFinity' if cycles is None else 'TRIGgered'}")
+            if cycles is not None:
+                connection.write(f"{source}:BURSt:NCYCles {cycles}")
+            connection.write(f"{source}:BURSt:PHASe 0")
+            connection.write(f"{source}:BURSt:TDELay 0")
+            connection.write(f"{source}:BURSt:STATe ON")
+        connection.write(":SOURce1:BURSt:TRIGger:SOURce EXTernal;:SOURce2:BURSt:TRIGger:SOURce EXTernal")
+        after = _gen1_burst_configuration(connection)
+        error = connection.query(":SYSTem:ERRor?").strip()
+        if not error.startswith(("0", "+0")):
+            raise IOError(f"Gen1 burst configuration reported instrument error: {error}")
+        for key, state in after.items():
+            expected = "INF" if cycles is None else "TRIG"
+            if (not state["burst_mode"].upper().startswith(expected)
+                    or state["burst_enabled"].upper() not in ("1", "ON")
+                    or not state["trigger_source"].upper().startswith("EXT")
+                    or (cycles is not None and state["cycles"] != cycles)):
+                raise IOError(f"Gen1 burst configuration readback mismatch: {key}: {state}")
+        return {"generator": "gen1", "channels": [1, 2], "cycles": cycles,
+                "waveform_duration_seconds": 1.0, "burst_duration_seconds": cycles,
+                "trigger": "external", "repeat": "infinite" if cycles is None else "N cycles per trigger",
+                "before": before, "after": after}
+    finally:
+        connection.close()
+        if manager is not None:
+            manager.close()
+
+
+def _set_gen1(channel, voltages):
+    connection, manager = _open_gen1_connection()
 
     normalized, vpp, offset = _normalized_waveform(voltages)
     try:
@@ -409,6 +485,20 @@ class AttControlService:
                 "channels": {key: {field: model[field] for field in (
                     "voltage_range_V", "attenuation_range_db", "peak_voltage_V", "source_file")}
                     for key, model in models.items()}}
+
+    def getGen1BurstConfiguration(self):
+        with self._lock:
+            connection, manager = _open_gen1_connection()
+            try:
+                return _gen1_burst_configuration(connection)
+            finally:
+                connection.close()
+                if manager is not None:
+                    manager.close()
+
+    def setGen1BurstCycles(self, cycles=15):
+        with self._lock:
+            return configure_gen1_burst_cycles(cycles)
 
     def previewAttenuationWaveform(self, generator, channel, attenuations_db):
         waveform, metadata = prepare_attenuation_waveform(generator, channel, attenuations_db)

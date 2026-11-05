@@ -935,11 +935,32 @@ class AttSimClient:
         return self._apply([("gen1", 1, [-10 * math.log10(alice)]),
                             ("gen1", 2, [-10 * math.log10(bob)])])
 
-    def play(self):
-        """Play the saved, balanced Gen1 curves without changing Gen2."""
+    def play(self, cycles=None):
+        """Load balanced Gen1 curves; optional N-cycle bursts. Gen2 is unchanged.
+
+        play() retains the original infinite-repeat behavior.
+        play(cycles=15) restarts on external PPS after each 15-cycle burst.
+        """
+        if cycles is not None and (isinstance(cycles, bool) or not isinstance(cycles, int)
+                                   or not 1 <= cycles <= 1_000_000):
+            raise ValueError("cycles must be an integer in 1..1000000")
         data = json.loads(self.data_path.read_text(encoding="utf-8"))
         commands = _counts_waveform_commands(data, self._remote())
-        return self._apply(commands)
+        responses = self._apply(commands)
+        if cycles is None:
+            return responses
+        return {"waveform_responses": responses, "burst": self.gen1_cycles(cycles)}
+
+    def gen1_cycles(self, cycles=15):
+        """Set both loaded Gen1 waves to N cycles/trigger; no reload or Gen2 changes.
+
+        None restores infinite bursts. With 1PPS the next start can be N or
+        N+1 seconds later; accepted trigger epochs must be inferred from data.
+        """
+        if cycles is not None and (isinstance(cycles, bool) or not isinstance(cycles, int)
+                                   or not 1 <= cycles <= 1_000_000):
+            raise ValueError("cycles must be an integer in 1..1000000, or None")
+        return self._remote().setGen1BurstCycles(cycles)
 
     def preview(self, rho, show=True):
         """Offline only: return (in-memory curves, figure), without saving."""
@@ -1109,9 +1130,10 @@ if __name__ == "__main__":
 
     sim = AttSimClient()
 
-    # sim.fixed(0.16)
-    # sim.play()
-
+    # sim.fixed(alice=0.01, bob=1)
+    sim.fixed(alice=0.01, bob=0.003)
+    # sim.play(cycles=150)
+    
     # sim.disable_compensation()
     # sim.compensate(rho=2)
-    sim.compensateSequence()
+    # sim.compensateSequence()
